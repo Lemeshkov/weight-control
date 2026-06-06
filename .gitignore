@@ -1,0 +1,154 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+venv_weight/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+*.egg
+dist/
+build/
+*.log
+*.pid
+*.seed
+*.pid.lock
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+*.mo
+*.pot
+
+# Backend
+backend/uploads/
+backend/__pycache__/
+backend/.env
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/test_frame.jpg
+backend/test_camera_frame.jpg
+backend/test_*.jpg
+backend/*.log
+
+# FastAPI
+backend/.mypy_cache/
+backend/.pytest_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/package-lock.json
+frontend/yarn.lock
+frontend/.DS_Store
+frontend/coverage/
+frontend/build/
+frontend/.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+*.orig
+*.bak
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+*.secret
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+*.accdb
+
+# Docker
+*.pid
+docker-compose.override.yml
+.docker/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Temp files
+*.tmp
+*.temp
+*.cache
+.cache/
+tmp/
+temp/
+
+# Redis dump
+dump.rdb
+
+# Project specific
+*.xlsx
+*.xls
+*.pdf
+!requirements.txt
+*.mp4
+*.avi
+*.mov
+backup_*.xlsx
+defect_*.xlsx
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Thumbnail cache
+._*
+*~
+
+# Environment variables
+.env
+.env.backend
+.env.frontend

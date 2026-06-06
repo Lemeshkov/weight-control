@@ -1,0 +1,14 @@
+подключение к докеру для создания таблиц
+
+docker exec -it weight_control_db psql -U weight_user -d weight_control
+
+Введите пароль, когда запросит: weight_pass
+ проверка создания таблиц  \d
+выход  \q
+
+venv_weight\Scripts\activate.bat
+set DATABASE_URL=postgresql://weight_user:weight_pass@localhost:5433/weight_control
+uvicorn app.main:app --reload --port 8000
+Запуск бекэнд    uvicorn app.main:app --reload --port 8000
+
+переменная    set DATABASE_URL=postgresql://weight_user:weight_pass@localhost:5433/weight_control
