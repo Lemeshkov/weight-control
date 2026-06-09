@@ -532,7 +532,7 @@ const LidarViewer: React.FC = () => {
           gap: "10px",
         }}
       >
-        <h2 style={{ margin: 0 }}>🚛 Измерение объема угля в кузове</h2>
+        <h2 style={{ margin: 0 }}> Измерение объема угля в кузове</h2>
         <div
           style={{
             display: "flex",
@@ -547,7 +547,7 @@ const LidarViewer: React.FC = () => {
               checked={showCamera}
               onChange={(e) => setShowCamera(e.target.checked)}
             />
-            📷 Показывать камеру
+             Показывать камеру
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: "5px" }}>
             <input
@@ -591,7 +591,7 @@ const LidarViewer: React.FC = () => {
             flex: 1,
           }}
         >
-          <span>📡 Лидар: </span>
+          <span> Лидар: </span>
           <span
             style={{
               color: status?.connected ? "#28a745" : "#dc3545",
@@ -614,7 +614,7 @@ const LidarViewer: React.FC = () => {
             flex: 1,
           }}
         >
-          <span>📷 Камера: </span>
+          <span> Камера: </span>
           <span
             style={{
               color: cameraStatus?.connected ? "#28a745" : "#dc3545",
@@ -704,7 +704,7 @@ const LidarViewer: React.FC = () => {
             }}
           >
             <h3 style={{ marginTop: 0, marginBottom: "15px" }}>
-              🗺️ Сканирование кузова автомобиля
+               Сканирование кузова автомобиля
             </h3>
             <canvas
               ref={canvasRef}
@@ -801,7 +801,7 @@ const LidarViewer: React.FC = () => {
                 }}
               >
                 <h3 style={{ marginTop: 0, marginBottom: "15px" }}>
-                  📊 Профиль угля в кузове
+                   Профиль угля в кузове
                 </h3>
                 <canvas
                   ref={chartCanvasRef}
@@ -839,7 +839,7 @@ const LidarViewer: React.FC = () => {
               }}
             >
               <h3 style={{ marginTop: 0, marginBottom: "15px" }}>
-                📸 Контроль качества
+                 Контроль качества
               </h3>
               {cameraLoading && (
                 <div style={{ textAlign: "center", padding: "20px" }}>
@@ -867,7 +867,7 @@ const LidarViewer: React.FC = () => {
                     borderRadius: "4px",
                   }}
                 >
-                  📷 Нет изображения с камеры
+                   Нет изображения с камеры
                   <br />
                   <span style={{ fontSize: "12px" }}>
                     Проверьте подключение камеры
@@ -928,7 +928,7 @@ const LidarViewer: React.FC = () => {
           >
             <div>
               <label style={{ fontSize: "12px", color: "#666" }}>
-                📏 Длина кузова (м)
+                 Длина кузова (м)
               </label>
               <input
                 type="number"
@@ -945,7 +945,7 @@ const LidarViewer: React.FC = () => {
             </div>
             <div>
               <label style={{ fontSize: "12px", color: "#666" }}>
-                📐 Ширина кузова (м)
+                 Ширина кузова (м)
               </label>
               <input
                 type="number"
@@ -962,7 +962,7 @@ const LidarViewer: React.FC = () => {
             </div>
             <div>
               <label style={{ fontSize: "12px", color: "#666" }}>
-                ⛏️ Плотность угля (кг/м³)
+                 Плотность угля (кг/м³)
               </label>
               <input
                 type="number"
@@ -979,7 +979,7 @@ const LidarViewer: React.FC = () => {
             </div>
           </div>
           <div style={{ marginTop: "10px", fontSize: "12px", color: "#888" }}>
-            💡 Подсказка: Для точного расчета укажите реальные размеры кузова
+             Подсказка: Для точного расчета укажите реальные размеры кузова
             автомобиля
           </div>
           <button

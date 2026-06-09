@@ -67,7 +67,7 @@ function App() {
             transition: "all 0.3s",
           }}
         >
-          🚛 Весовой контроль
+           Весовой контроль
         </button>
         <button
           onClick={() => setActiveTab("lidar")}
@@ -82,7 +82,7 @@ function App() {
             transition: "all 0.3s",
           }}
         >
-          📡 Лидарный контроль
+           Лидарный контроль
         </button>
       </div>
 
