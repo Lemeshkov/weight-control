@@ -95,7 +95,7 @@ class Trip(Base):
     exit_measurement = relationship("ExitMeasurement", back_populates="trip", uselist=False)
     stock_events = relationship("StockEvent", back_populates="trip")
     uniserver_events = relationship("UniserverEvent", back_populates="trip")
-
+    lidar_measurements = relationship("LidarMeasurement", back_populates="trip")
 class EntryMeasurement(Base):
     __tablename__ = "entry_measurements"
     
@@ -111,7 +111,7 @@ class EntryMeasurement(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     trip = relationship("Trip", back_populates="entry_measurement")
-    neural_log = relationship("NeuralLog", back_populates="measurement", foreign_keys="NeuralLog.measurement_id")
+    # neural_log = relationship("NeuralLog", back_populates="measurement", foreign_keys="NeuralLog.measurement_id")
 
 class ExitMeasurement(Base):
     __tablename__ = "exit_measurements"
@@ -130,7 +130,7 @@ class ExitMeasurement(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     trip = relationship("Trip", back_populates="exit_measurement")
-    neural_log = relationship("NeuralLog", back_populates="measurement", foreign_keys="NeuralLog.measurement_id")
+    # neural_log = relationship("NeuralLog", back_populates="measurement", foreign_keys="NeuralLog.measurement_id")
 
 # Аналитические и служебные
 class NeuralLog(Base):
@@ -145,7 +145,7 @@ class NeuralLog(Base):
     processing_time_ms = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    measurement = relationship("EntryMeasurement", back_populates="neural_log", foreign_keys=[measurement_id])
+    # measurement = relationship("EntryMeasurement", back_populates="neural_log", foreign_keys=[measurement_id])
 
 class SystemLog(Base):
     __tablename__ = "system_logs"
@@ -201,3 +201,33 @@ class UniserverEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     trip = relationship("Trip", back_populates="uniserver_events")
+
+class LidarMeasurement(Base):
+    __tablename__ = "lidar_measurements"
+    
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True)
+    
+    # Данные сканирования
+    points_count = Column(Integer)
+    distances_mm = Column(JSON)  # массив расстояний
+    distances_m = Column(JSON)   # массив расстояний в метрах
+    
+    # Расчёты
+    volume_m3 = Column(Float)
+    mass_tons = Column(Float)
+    avg_height_m = Column(Float)
+    cross_section_m2 = Column(Float)
+    
+    # Параметры автомобиля
+    truck_length_m = Column(Float)
+    truck_width_m = Column(Float)
+    coal_density_kg_m3 = Column(Float)
+    
+    # Статус
+    is_empty = Column(Boolean, default=False)
+    empty_confidence = Column(Integer)
+    
+    # Связи
+    trip = relationship("Trip", back_populates="lidar_measurements")    

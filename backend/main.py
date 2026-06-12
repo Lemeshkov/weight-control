@@ -15,8 +15,8 @@ from crud import TripCRUD, VehicleCRUD
 from config import settings
 from routers import weighing
 from routers import lidar
-from routers import weighing, lidar, camera 
 from services.camera_client import CameraClient 
+from routers import lidar, scan_3d, camera, weighing
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +39,7 @@ app.add_middleware(
 # Подключаем роутеры
 app.include_router(weighing.router)
 app.include_router(lidar.router)
+app.include_router(scan_3d.router)
 app.include_router(camera.router)
 
 # Глобальный объект лидара

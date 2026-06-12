@@ -11,4 +11,8 @@ set DATABASE_URL=postgresql://weight_user:weight_pass@localhost:5433/weight_cont
 uvicorn app.main:app --reload --port 8000
 Запуск бекэнд    uvicorn app.main:app --reload --port 8000
 
+апи лидара   http://localhost:8000/api/lidar/scan
+
 переменная    set DATABASE_URL=postgresql://weight_user:weight_pass@localhost:5433/weight_control
+
+старт контейнера docker start weight_control_db
