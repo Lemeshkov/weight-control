@@ -1,518 +1,3 @@
-// // frontend/src/components/LidarViewer.tsx (упрощённая версия, только отображение)
-// import React, { useState, useEffect, useRef } from "react";
-// import { lidarApi } from "../../services/api";
-// import axios from "axios";
-
-// interface LidarData {
-//   timestamp: string;
-//   points_count: number;
-//   distances_mm: number[];
-//   distances_m: number[];
-//   statistics: {
-//     min_mm: number;
-//     max_mm: number;
-//     avg_mm: number;
-//     min_m: number;
-//     max_m: number;
-//     avg_m: number;
-//   };
-// }
-
-// interface CameraStatus {
-//   connected: boolean;
-//   type: string;
-//   ip?: string;
-// }
-
-// interface VolumeData {
-//   volume_m3: number;
-//   cross_section_area: number;
-//   avg_height_m: number;
-//   coal_mass_tons: number;
-// }
-
-// const LidarViewer: React.FC = () => {
-//   const [lidarData, setLidarData] = useState<LidarData | null>(null);
-//   const [status, setStatus] = useState<{ connected: boolean; host: string; port: number } | null>(null);
-//   const [cameraStatus, setCameraStatus] = useState<CameraStatus | null>(null);
-//   const [cameraImage, setCameraImage] = useState<string | null>(null);
-//   const [loading, setLoading] = useState(false);
-//   const [cameraLoading, setCameraLoading] = useState(false);
-//   const [error, setError] = useState<string | null>(null);
-//   const [showCamera, setShowCamera] = useState(false); // отключаем камеру
-//   const canvasRef = useRef<HTMLCanvasElement>(null);
-//   const chartCanvasRef = useRef<HTMLCanvasElement>(null);
-
-//   // Параметры автомобиля
-//   const [vehicleParams, setVehicleParams] = useState({
-//     length_m: 6.0,
-//     width_m: 2.5,
-//     coal_density_kg_m3: 850,
-//   });
-
-//   const [volumeData, setVolumeData] = useState<VolumeData | null>(null);
-
-//   const fetchStatus = async () => {
-//     try {
-//       const response = await lidarApi.getStatus();
-//       setStatus(response.data);
-//     } catch (err) {
-//       console.error("Error fetching lidar status:", err);
-//     }
-//   };
-
-//   const fetchCameraStatus = async () => {
-//     if (!showCamera) return;
-//     try {
-//       const response = await axios.get("http://localhost:8000/api/camera/status");
-//       setCameraStatus(response.data);
-//     } catch (err) {
-//       console.error("Error fetching camera status:", err);
-//     }
-//   };
-
-//   const fetchCameraFrame = async () => {
-//     if (!showCamera) return;
-//     setCameraLoading(true);
-//     try {
-//       const response = await axios.get("http://localhost:8000/api/camera/frame", {
-//         responseType: "blob",
-//         timeout: 3000,
-//       });
-//       const imageUrl = URL.createObjectURL(response.data);
-//       setCameraImage(imageUrl);
-//     } catch (err) {
-//       console.error("Error fetching camera frame:", err);
-//     } finally {
-//       setCameraLoading(false);
-//     }
-//   };
-
-//   const calculateVolume = (data: LidarData) => {
-//     if (!data.distances_mm || data.distances_mm.length < 15) {
-//       setVolumeData(null);
-//       return;
-//     }
-
-//     const roadLevel = Math.max(...data.distances_mm) / 1000;
-//     const heights = data.distances_mm.map((d) => {
-//       const distM = d / 1000;
-//       if (distM < roadLevel - 0.03) return roadLevel - distM;
-//       return 0;
-//     });
-
-//     const validHeights = heights.filter((h) => h > 0.01);
-//     if (validHeights.length === 0) {
-//       setVolumeData(null);
-//       return;
-//     }
-
-//     const avgHeight = validHeights.reduce((a, b) => a + b, 0) / validHeights.length;
-//     const calibrationFactor = 60 / (avgHeight * 100);
-//     const calibratedHeight = avgHeight * calibrationFactor;
-//     const volume_m3 = vehicleParams.length_m * vehicleParams.width_m * calibratedHeight;
-//     const mass_tons = (volume_m3 * vehicleParams.coal_density_kg_m3) / 1000;
-//     const crossSectionArea = calibratedHeight * vehicleParams.width_m;
-
-//     setVolumeData({
-//       volume_m3: Math.round(volume_m3 * 100) / 100,
-//       cross_section_area: Math.round(crossSectionArea * 100) / 100,
-//       avg_height_m: Math.round(calibratedHeight * 100) / 100,
-//       coal_mass_tons: Math.round(mass_tons * 10) / 10,
-//     });
-//   };
-
-//   const fetchLidarData = async () => {
-//     setLoading(true);
-//     setError(null);
-//     try {
-//       const response = await lidarApi.getScan();
-//       console.log("📡 Данные получены:", response.data);
-//       setLidarData(response.data);
-//       calculateVolume(response.data);
-
-//       if (response.data.distances_mm && response.data.distances_mm.length > 0) {
-//         drawLidarData(response.data);
-//         drawDistanceChart(response.data);
-//       }
-//     } catch (err: any) {
-//       console.error("Error fetching lidar data:", err);
-//       setError(err.response?.data?.detail || "Ошибка получения данных с лидара");
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
-
-//   const drawLidarData = (data: LidarData) => {
-//     const canvas = canvasRef.current;
-//     if (!canvas) return;
-
-//     const ctx = canvas.getContext("2d");
-//     if (!ctx) return;
-
-//     const width = canvas.width;
-//     const height = canvas.height;
-//     const centerX = width / 2;
-//     const centerY = height / 2;
-//     const maxRadius = Math.min(width, height) / 2 - 20;
-
-//     ctx.fillStyle = "#1a1a1a";
-//     ctx.fillRect(0, 0, width, height);
-
-//     if (!data.distances_mm || data.distances_mm.length === 0) {
-//       ctx.fillStyle = "#ffffff";
-//       ctx.font = "16px Arial";
-//       ctx.textAlign = "center";
-//       ctx.fillText("Нет данных", centerX, centerY);
-//       return;
-//     }
-
-//     ctx.strokeStyle = "#333333";
-//     ctx.lineWidth = 1;
-
-//     const maxDistance = Math.max(...data.distances_mm) / 1000;
-//     const maxDisplayDistance = Math.min(maxDistance, 10);
-
-//     for (let i = 1; i <= 4; i++) {
-//       const radius = (i / 4) * maxRadius;
-//       ctx.beginPath();
-//       ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
-//       ctx.stroke();
-//       const distance = ((maxDisplayDistance * i) / 4).toFixed(1);
-//       ctx.fillStyle = "#666666";
-//       ctx.font = "12px Arial";
-//       ctx.fillText(`${distance}м`, centerX + radius - 10, centerY - 5);
-//     }
-
-//     const startAngleDeg = -35;
-//     const stopAngleDeg = 35;
-
-//     const leftRad = (startAngleDeg * Math.PI) / 180;
-//     const leftX = centerX + Math.cos(leftRad) * maxRadius;
-//     const leftY = centerY + Math.sin(leftRad) * maxRadius;
-//     ctx.beginPath();
-//     ctx.moveTo(centerX, centerY);
-//     ctx.lineTo(leftX, leftY);
-//     ctx.strokeStyle = "#00ff00";
-//     ctx.lineWidth = 1;
-//     ctx.stroke();
-
-//     const rightRad = (stopAngleDeg * Math.PI) / 180;
-//     const rightX = centerX + Math.cos(rightRad) * maxRadius;
-//     const rightY = centerY + Math.sin(rightRad) * maxRadius;
-//     ctx.beginPath();
-//     ctx.moveTo(centerX, centerY);
-//     ctx.lineTo(rightX, rightY);
-//     ctx.stroke();
-
-//     ctx.beginPath();
-//     ctx.arc(centerX, centerY, maxRadius * 0.8, leftRad, rightRad);
-//     ctx.strokeStyle = "#00ff00";
-//     ctx.setLineDash([5, 5]);
-//     ctx.stroke();
-//     ctx.setLineDash([]);
-
-//     ctx.fillStyle = "#00ff00";
-//     ctx.font = "10px Arial";
-//     ctx.fillText(`-35°`, leftX - 15, leftY);
-//     ctx.fillText(`+35°`, rightX + 5, rightY - 5);
-//     ctx.fillText(`70° сектор`, centerX + 20, centerY - maxRadius * 0.75);
-
-//     for (let angle = -30; angle <= 30; angle += 10) {
-//       const rad = (angle * Math.PI) / 180;
-//       const x = centerX + Math.cos(rad) * (maxRadius - 10);
-//       const y = centerY + Math.sin(rad) * (maxRadius - 10);
-//       ctx.beginPath();
-//       ctx.moveTo(centerX, centerY);
-//       ctx.lineTo(x, y);
-//       ctx.strokeStyle = "#444444";
-//       ctx.stroke();
-//       if (angle !== 0) {
-//         ctx.fillStyle = "#666666";
-//         ctx.font = "9px Arial";
-//         ctx.fillText(`${angle}°`, x, y);
-//       }
-//     }
-
-//     const sectorAngleDeg = stopAngleDeg - startAngleDeg;
-//     const angleStepDeg = sectorAngleDeg / data.distances_mm.length;
-
-//     for (let i = 0; i < data.distances_mm.length; i++) {
-//       const distanceM = data.distances_mm[i] / 1000;
-//       if (distanceM === 0) continue;
-//       if (distanceM > maxDisplayDistance) continue;
-
-//       const currentAngleDeg = startAngleDeg + i * angleStepDeg;
-//       const currentAngleRad = (currentAngleDeg * Math.PI) / 180;
-//       const radius = (distanceM / maxDisplayDistance) * maxRadius;
-//       const x = centerX + Math.cos(currentAngleRad) * radius;
-//       const y = centerY + Math.sin(currentAngleRad) * radius;
-
-//       if (distanceM < 1) ctx.fillStyle = "#ff4444";
-//       else if (distanceM < 3) ctx.fillStyle = "#ffaa44";
-//       else ctx.fillStyle = "#44ff44";
-
-//       ctx.fillRect(x - 2, y - 2, 4, 4);
-//     }
-
-//     ctx.fillStyle = "#ff4444";
-//     ctx.beginPath();
-//     ctx.arc(centerX, centerY, 8, 0, 2 * Math.PI);
-//     ctx.fill();
-//     ctx.fillStyle = "#ffffff";
-//     ctx.font = "bold 14px Arial";
-//     ctx.textAlign = "center";
-//     ctx.fillText("ЛИДАР", centerX, centerY + 4);
-
-//     ctx.fillStyle = "#888888";
-//     ctx.font = "10px Arial";
-//     ctx.fillText("Сектор сканирования: 70° (от -35° до +35°)", centerX, height - 10);
-//   };
-
-//   const drawDistanceChart = (data: LidarData) => {
-//     const canvas = chartCanvasRef.current;
-//     if (!canvas) return;
-
-//     const ctx = canvas.getContext("2d");
-//     if (!ctx) return;
-
-//     const width = canvas.width;
-//     const height = canvas.height;
-
-//     ctx.fillStyle = "#ffffff";
-//     ctx.fillRect(0, 0, width, height);
-
-//     if (!data.distances_m || data.distances_m.length === 0) {
-//       ctx.fillStyle = "#666666";
-//       ctx.font = "14px Arial";
-//       ctx.textAlign = "center";
-//       ctx.fillText("Нет данных для отображения", width / 2, height / 2);
-//       return;
-//     }
-
-//     const maxDistance = Math.max(...data.distances_m);
-//     const step = width / data.distances_m.length;
-
-//     ctx.strokeStyle = "#e0e0e0";
-//     ctx.lineWidth = 1;
-
-//     for (let i = 0; i <= 4; i++) {
-//       const y = height - (i / 4) * height;
-//       ctx.beginPath();
-//       ctx.moveTo(0, y);
-//       ctx.lineTo(width, y);
-//       ctx.stroke();
-//       const distance = ((i / 4) * maxDistance).toFixed(1);
-//       ctx.fillStyle = "#666666";
-//       ctx.font = "10px Arial";
-//       ctx.fillText(`${distance}м`, 5, y - 2);
-//     }
-
-//     ctx.beginPath();
-//     ctx.strokeStyle = "#007bff";
-//     ctx.lineWidth = 2;
-
-//     for (let i = 0; i < data.distances_m.length; i++) {
-//       const x = i * step;
-//       const y = height - (data.distances_m[i] / maxDistance) * height;
-//       if (i === 0) ctx.moveTo(x, y);
-//       else ctx.lineTo(x, y);
-//     }
-//     ctx.stroke();
-
-//     const thresholdY = height - (3 / maxDistance) * height;
-//     if (thresholdY >= 0 && thresholdY <= height) {
-//       ctx.beginPath();
-//       ctx.strokeStyle = "#ff0000";
-//       ctx.setLineDash([5, 5]);
-//       ctx.moveTo(0, thresholdY);
-//       ctx.lineTo(width, thresholdY);
-//       ctx.stroke();
-//       ctx.setLineDash([]);
-//       ctx.fillStyle = "#ff0000";
-//       ctx.font = "10px Arial";
-//       ctx.fillText("Уровень борта (3м)", width - 120, thresholdY - 2);
-//     }
-
-//     ctx.fillStyle = "#666666";
-//     ctx.font = "12px Arial";
-//     ctx.fillText("Длина кузова", width / 2 - 40, height - 5);
-
-//     ctx.save();
-//     ctx.translate(15, height / 2);
-//     ctx.rotate(-Math.PI / 2);
-//     ctx.fillText("Расстояние до лидара (м)", -20, 0);
-//     ctx.restore();
-//   };
-
-//   useEffect(() => {
-//     fetchStatus();
-//     fetchCameraStatus();
-//     fetchLidarData();
-//     fetchCameraFrame();
-
-//     // Автообновление каждые 2 секунды
-//     const interval = setInterval(() => {
-//       fetchLidarData();
-//     }, 2000);
-
-//     return () => clearInterval(interval);
-//   }, []);
-
-//   useEffect(() => {
-//     if (lidarData && lidarData.distances_mm) {
-//       drawLidarData(lidarData);
-//       drawDistanceChart(lidarData);
-//     }
-//   }, [lidarData]);
-
-//   return (
-//     <div style={{ padding: "20px", backgroundColor: "#f5f5f5", borderRadius: "8px" }}>
-//       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "10px" }}>
-//         <h2 style={{ margin: 0 }}>📊 Измерение объема угля в кузове</h2>
-//         <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-//           <label style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-//             <input type="checkbox" checked={showCamera} onChange={(e) => setShowCamera(e.target.checked)} />
-//             📷 Показывать камеру
-//           </label>
-//           <button onClick={fetchLidarData} disabled={loading} style={{ padding: "8px 16px", backgroundColor: "#007bff", color: "white", border: "none", borderRadius: "4px", cursor: loading ? "not-allowed" : "pointer" }}>
-//             {loading ? "Загрузка..." : "🔄 Обновить"}
-//           </button>
-//         </div>
-//       </div>
-
-//       {/* Статус подключения */}
-//       <div style={{ marginBottom: "20px", display: "flex", gap: "20px", flexWrap: "wrap" }}>
-//         <div style={{ padding: "10px", backgroundColor: "white", borderRadius: "4px", flex: 1 }}>
-//           <span>📡 Лидар: </span>
-//           <span style={{ color: status?.connected ? "#28a745" : "#dc3545", fontWeight: "bold" }}>
-//             {status?.connected ? "✅ Подключен" : "❌ Не подключен"}
-//           </span>
-//           {status && <span style={{ marginLeft: "10px", fontSize: "12px" }}>{status.host}:{status.port}</span>}
-//         </div>
-//         <div style={{ padding: "10px", backgroundColor: "white", borderRadius: "4px", flex: 1 }}>
-//           <span>📷 Камера: </span>
-//           <span style={{ color: cameraStatus?.connected ? "#28a745" : "#dc3545", fontWeight: "bold" }}>
-//             {cameraStatus?.connected ? "✅ Подключена" : "❌ Не подключена"}
-//           </span>
-//         </div>
-//       </div>
-
-//       {error && <div style={{ marginBottom: "20px", padding: "10px", backgroundColor: "#f8d7da", color: "#721c24", borderRadius: "4px" }}>⚠️ {error}</div>}
-
-//       {/* Карточка с объемом угля */}
-//       {volumeData && (
-//         <div style={{
-//           background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-//           padding: "20px",
-//           borderRadius: "12px",
-//           color: "white",
-//           marginBottom: "20px",
-//           display: "grid",
-//           gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-//           gap: "15px",
-//         }}>
-//           <div style={{ textAlign: "center" }}>
-//             <div style={{ fontSize: "12px", opacity: 0.9 }}>Объем угля</div>
-//             <div style={{ fontSize: "32px", fontWeight: "bold" }}>{volumeData.volume_m3} м³</div>
-//           </div>
-//           <div style={{ textAlign: "center" }}>
-//             <div style={{ fontSize: "12px", opacity: 0.9 }}>Масса угля</div>
-//             <div style={{ fontSize: "32px", fontWeight: "bold" }}>{volumeData.coal_mass_tons} т</div>
-//           </div>
-//           <div style={{ textAlign: "center" }}>
-//             <div style={{ fontSize: "12px", opacity: 0.9 }}>Сечение угля</div>
-//             <div style={{ fontSize: "24px", fontWeight: "bold" }}>{volumeData.cross_section_area} м²</div>
-//           </div>
-//           <div style={{ textAlign: "center" }}>
-//             <div style={{ fontSize: "12px", opacity: 0.9 }}>Ср. высота</div>
-//             <div style={{ fontSize: "24px", fontWeight: "bold" }}>{volumeData.avg_height_m} м</div>
-//           </div>
-//         </div>
-//       )}
-
-//       <div style={{ display: "grid", gridTemplateColumns: showCamera ? "1fr 1fr" : "1fr", gap: "20px" }}>
-//         {/* Левая колонка - Лидар */}
-//         <div>
-//           <div style={{ backgroundColor: "white", borderRadius: "8px", padding: "10px", marginBottom: "20px" }}>
-//             <h3 style={{ marginTop: 0, marginBottom: "15px" }}>🗺️ Сканирование кузова</h3>
-//             <canvas ref={canvasRef} width={500} height={500} style={{ width: "100%", maxWidth: "500px", height: "auto", border: "1px solid #ddd", borderRadius: "4px", display: "block", margin: "0 auto" }} />
-//             <div style={{ fontSize: "12px", color: "#666", marginTop: "10px", textAlign: "center" }}>
-//               🟢 Нормально (&gt;3м) &nbsp;&nbsp; 🟡 Внимание (1-3м) &nbsp;&nbsp; 🔴 Опасно (&lt;1м)
-//             </div>
-//           </div>
-
-//           {/* Статистика лидара */}
-//           {lidarData && lidarData.points_count > 0 && (
-//             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", marginBottom: "20px" }}>
-//               <div style={{ padding: "10px", backgroundColor: "white", borderRadius: "4px", textAlign: "center" }}>
-//                 <div style={{ fontSize: "11px", color: "#666" }}>Точек</div>
-//                 <div style={{ fontSize: "20px", fontWeight: "bold" }}>{lidarData.points_count}</div>
-//               </div>
-//               <div style={{ padding: "10px", backgroundColor: "white", borderRadius: "4px", textAlign: "center" }}>
-//                 <div style={{ fontSize: "11px", color: "#666" }}>Мин. расстояние</div>
-//                 <div style={{ fontSize: "20px", fontWeight: "bold" }}>{lidarData.statistics.min_m}м</div>
-//               </div>
-//               <div style={{ padding: "10px", backgroundColor: "white", borderRadius: "4px", textAlign: "center" }}>
-//                 <div style={{ fontSize: "11px", color: "#666" }}>Макс. расстояние</div>
-//                 <div style={{ fontSize: "20px", fontWeight: "bold" }}>{lidarData.statistics.max_m}м</div>
-//               </div>
-//             </div>
-//           )}
-
-//           {/* График профиля */}
-//           {lidarData && lidarData.distances_m && lidarData.distances_m.length > 0 && (
-//             <div style={{ padding: "15px", backgroundColor: "white", borderRadius: "4px" }}>
-//               <h3 style={{ marginTop: 0, marginBottom: "15px" }}>📊 Профиль угля в кузове</h3>
-//               <canvas ref={chartCanvasRef} width={600} height={200} style={{ width: "100%", height: "200px", border: "1px solid #ddd", borderRadius: "4px" }} />
-//               <div style={{ fontSize: "12px", color: "#666", marginTop: "10px" }}>🔴 Красная линия - уровень борта (3 метра от лидара)</div>
-//               <div style={{ fontSize: "11px", color: "#888", marginTop: "5px" }}>📌 Выше красной линии - есть уголь, ниже - пустое место</div>
-//             </div>
-//           )}
-//         </div>
-
-//         {/* Правая колонка - Камера */}
-//         {showCamera && (
-//           <div>
-//             <div style={{ backgroundColor: "white", borderRadius: "8px", padding: "10px" }}>
-//               <h3 style={{ marginTop: 0, marginBottom: "15px" }}>📸 Контроль качества</h3>
-//               {cameraLoading && <div style={{ textAlign: "center", padding: "20px" }}>Загрузка кадра...</div>}
-//               {cameraImage && !cameraLoading && <img src={cameraImage} alt="Camera feed" style={{ width: "100%", borderRadius: "4px", border: "1px solid #ddd" }} />}
-//               {!cameraImage && !cameraLoading && (
-//                 <div style={{ textAlign: "center", padding: "40px", color: "#666", background: "#f9f9f9", borderRadius: "4px" }}>
-//                   📷 Нет изображения с камеры
-//                 </div>
-//               )}
-//             </div>
-//           </div>
-//         )}
-//       </div>
-
-//       {/* Настройки автомобиля */}
-//       <details style={{ marginTop: "20px" }}>
-//         <summary style={{ cursor: "pointer", color: "#666", fontSize: "12px" }}>⚙️ Настройки автомобиля</summary>
-//         <div style={{ marginTop: "10px", padding: "15px", backgroundColor: "white", borderRadius: "4px" }}>
-//           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "15px" }}>
-//             <div>
-//               <label style={{ fontSize: "12px", color: "#666" }}>📏 Длина кузова (м)</label>
-//               <input type="number" step="0.5" value={vehicleParams.length_m} onChange={(e) => setVehicleParams({ ...vehicleParams, length_m: parseFloat(e.target.value) })} style={{ width: "100%", padding: "5px", marginTop: "5px" }} />
-//             </div>
-//             <div>
-//               <label style={{ fontSize: "12px", color: "#666" }}>📐 Ширина кузова (м)</label>
-//               <input type="number" step="0.1" value={vehicleParams.width_m} onChange={(e) => setVehicleParams({ ...vehicleParams, width_m: parseFloat(e.target.value) })} style={{ width: "100%", padding: "5px", marginTop: "5px" }} />
-//             </div>
-//             <div>
-//               <label style={{ fontSize: "12px", color: "#666" }}>⛏️ Плотность угля (кг/м³)</label>
-//               <input type="number" step="10" value={vehicleParams.coal_density_kg_m3} onChange={(e) => setVehicleParams({ ...vehicleParams, coal_density_kg_m3: parseFloat(e.target.value) })} style={{ width: "100%", padding: "5px", marginTop: "5px" }} />
-//             </div>
-//           </div>
-//         </div>
-//       </details>
-//     </div>
-//   );
-// };
-
-// export default LidarViewer;
 
 // frontend/src/components/LidarViewer.tsx
 import React, { useState, useEffect, useRef } from "react";
@@ -603,7 +88,7 @@ const LidarViewer: React.FC = () => {
   const scanIntervalRef = useRef<number | undefined>(undefined);
   const startTimeRef = useRef<number>(0);
   const [currentScanId, setCurrentScanId] = useState<string | null>(null);
-
+  const isScanningRef = useRef(false);
   // Параметры автомобиля
   const [vehicleParams, setVehicleParams] = useState({
     length_m: 6.0,
@@ -745,34 +230,50 @@ const LidarViewer: React.FC = () => {
   };
 
   // ========== 3D СКАНИРОВАНИЕ ==========
-  const generateScanId = () => `scan_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
+  // const generateScanId = () => `scan_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
 
-  const start3DScan = async () => {
-    const scanId = generateScanId();
+const start3DScan = async () => {
+  console.log("🚀 1. start3DScan вызван");
+  
+  try {
+    // ✅ НЕ генерируем scan_id сами, а получаем от бэкенда
+    const response = await scan3dApi.start(vehicleParams.length_m, vehicleParams.width_m);
+    const scanId = response.data.scan_id;  // ← получаем ID от бэкенда
+    
+    console.log("✅ 2. Сессия создана на бэкенде, scanId:", scanId);
+    
     setCurrentScanId(scanId);
-
-    await scan3dApi.start(scanId, vehicleParams.length_m, vehicleParams.width_m);
-
     setIsScanning(true);
+    isScanningRef.current = true;
     setScanProfiles([]);
     setTotalVolume3d(null);
     setScanProgress(0);
     startTimeRef.current = Date.now();
-
+    
+    // Очищаем предыдущий интервал
+    if (scanIntervalRef.current) {
+      clearInterval(scanIntervalRef.current);
+    }
+    
     scanIntervalRef.current = window.setInterval(async () => {
-      if (!isScanning) return;
-
+      if (!isScanningRef.current) {
+        console.log("⏸️ Сканирование остановлено");
+        return;
+      }
+      
       try {
-        const response = await lidarApi.getScan();
-        const data = response.data;
-
+        const scanResponse = await lidarApi.getScan();
+        const data = scanResponse.data;
+        
         if (data.distances_mm && data.distances_mm.length > 0) {
           const elapsedSeconds = (Date.now() - startTimeRef.current) / 1000;
           const assumedSpeed = 0.3;
           const position = elapsedSeconds * assumedSpeed;
-
+          
+          // ✅ Используем scanId от бэкенда
           await scan3dApi.addProfile(scanId, data.distances_mm, position);
-
+          
+          // Обновляем локальное состояние...
           const roadLevel = Math.max(...data.distances_mm) / 1000;
           const heights = data.distances_mm.map((d: number) => {
             const distM = d / 1000;
@@ -784,7 +285,7 @@ const LidarViewer: React.FC = () => {
             ? validHeights.reduce((a: number, b: number) => a + b, 0) / validHeights.length
             : 0;
           const crossSection = avgHeight * vehicleParams.width_m;
-
+          
           setScanProfiles((prev) => [
             ...prev,
             {
@@ -795,16 +296,27 @@ const LidarViewer: React.FC = () => {
               cross_section_m2: crossSection,
             },
           ]);
-
+          
           setScanProgress(Math.min(100, (position / vehicleParams.length_m) * 100));
         }
       } catch (err) {
-        console.error("Scan error:", err);
+        console.error("❌ Ошибка в интервале:", err);
       }
     }, 100);
-  };
+    
+  } catch (error) {
+    console.error("❌ Ошибка при старте сканирования:", error);
+    setError("Не удалось начать 3D сканирование");
+  }
+};
 
-  const stop3DScan = async () => {
+const stop3DScan = async () => {
+  console.log("⏹️ Остановка 3D сканирования, ID:", currentScanId);
+  
+  // Останавливаем флаг
+  isScanningRef.current = false;
+  setIsScanning(false);
+  
   if (scanIntervalRef.current) {
     clearInterval(scanIntervalRef.current);
     scanIntervalRef.current = undefined;
@@ -814,30 +326,23 @@ const LidarViewer: React.FC = () => {
     try {
       const response = await scan3dApi.stop(currentScanId);
       const result = response.data;
+      console.log("📦 Результат 3D:", result);
+      
       setTotalVolume3d(result.total_volume_m3);
       setSuccess(`3D сканирование завершено! Объём: ${result.total_volume_m3} м³, Масса: ${result.total_mass_tons} т`);
       
-      // Сохраняем 3D результат в БД с правильными параметрами
-      // Используем result.total_volume_m3 как объём
-      const measureResponse = await lidarApi.measure({
-        truck_length_m: vehicleParams.length_m,
-        truck_width_m: vehicleParams.width_m,
-        coal_density_kg_m3: vehicleParams.coal_density_kg_m3
-      });
-      
-      console.log(" 3D результат сохранён в БД:", measureResponse.data);
-      
-      // Обновляем список измерений
       await fetchMeasurements();
+      console.log("📋 История обновлена");
       
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error stopping 3D scan:", err);
-      setError("Ошибка при завершении 3D сканирования");
+      setError(err.response?.data?.detail || "Ошибка при завершении 3D сканирования");
     }
+  } else {
+    console.warn("Нет active scanId для остановки");
   }
-  
-  setIsScanning(false);
 };
+
 
   const reset3DScan = () => {
     setScanProfiles([]);

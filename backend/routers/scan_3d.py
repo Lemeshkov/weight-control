@@ -2,13 +2,16 @@
 """
 3D сканирование для измерения объёма угля в движении
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Dict, Optional
 import logging
 import time
 import uuid
+from sqlalchemy.orm import Session
+from database import get_db
+from models import LidarMeasurement
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scan3d", tags=["3d-scan"])
@@ -165,8 +168,11 @@ async def add_scan_profile(request: AddProfileRequest):
 
 
 @router.post("/stop", response_model=ScanResult)
-async def stop_3d_scan(scan_id: str):
-    """Остановить сканирование и рассчитать итоговый объём"""
+async def stop_3d_scan(
+    scan_id: str,
+    db: Session = Depends(get_db)  # ← ДОБАВИТЬ ЗАВИСИМОСТЬ БД
+):
+    """Остановить сканирование, рассчитать объём и сохранить в БД"""
     if scan_id not in active_sessions:
         raise HTTPException(status_code=404, detail="Scan session not found")
     
@@ -181,11 +187,30 @@ async def stop_3d_scan(scan_id: str):
     
     # Рассчитываем итоговый объём
     total_volume = calculate_total_volume(profiles)
-    
-    # Рассчитываем массу
     total_mass_tons = (total_volume * session["coal_density_kg_m3"]) / 1000
-    
     duration = (datetime.now() - session["started_at"]).total_seconds()
+    
+    # ✅ СОХРАНЯЕМ РЕЗУЛЬТАТ В БД
+    measurement = LidarMeasurement(
+        timestamp=datetime.now(),
+        points_count=len(profiles),
+        distances_mm=[],  # 3D не хранит все точки (экономия памяти)
+        distances_m=[],
+        volume_m3=round(total_volume, 3),
+        mass_tons=round(total_mass_tons, 2),
+        avg_height_m=0,
+        cross_section_m2=0,
+        truck_length_m=session["truck_length_m"],
+        truck_width_m=session["truck_width_m"],
+        coal_density_kg_m3=session["coal_density_kg_m3"],
+        is_empty=total_volume < 0.1
+    )
+    
+    db.add(measurement)
+    db.commit()
+    db.refresh(measurement)
+    
+    logger.info(f"✅ 3D измерение сохранено в БД: ID={measurement.id}, объём={total_volume:.3f}м³")
     
     result = ScanResult(
         scan_id=scan_id,
@@ -200,11 +225,6 @@ async def stop_3d_scan(scan_id: str):
     
     session["status"] = "completed"
     session["result"] = result.dict()
-    
-    logger.info(f"✅ 3D сканирование завершено: {scan_id}, "
-                f"объём={total_volume:.3f}м³, "
-                f"масса={total_mass_tons:.2f}т, "
-                f"профилей={len(profiles)}")
     
     return result
 

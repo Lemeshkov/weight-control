@@ -1,7 +1,7 @@
 ﻿// frontend/src/App.tsx
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import { CurrentWeight } from "./components/Weighing/CurrentWeight";
+// import { CurrentWeight } from "./components/Weighing/CurrentWeight";
 import LidarViewer from "./components/Weighing/LidarViewer";
 
 function App() {
@@ -129,7 +129,7 @@ function App() {
 
           <hr style={{ margin: "20px 0" }} />
 
-          <CurrentWeight />
+          {/* <CurrentWeight /> */}
         </>
       )}
 
