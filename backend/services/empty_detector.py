@@ -1,10 +1,9 @@
-# backend/services/empty_detector.py
 """
-Детектор пустого кузова/коробки
+Детектор пустоты (обертка над ObjectDetector)
 """
-
 import logging
-from typing import Dict, List, Any
+from typing import Dict, Any
+from services.object_detector import ObjectDetector
 
 logger = logging.getLogger(__name__)
 
@@ -14,93 +13,61 @@ class EmptyDetector:
     """
     
     @classmethod
-    def is_empty(cls, lidar_data: Dict[str, Any]) -> Dict[str, Any]:
+    def is_empty(cls, lidar_data: Dict[str, Any], mode: str = "auto") -> Dict[str, Any]:
         """
-        Определяет, пустой ли объект по данным лидара
+        Определяет, пустой ли объект
         
         Параметры:
-        - lidar_data: результат parse_scan_data
-        
-        Возвращает:
-        - словарь с решением и метриками
+        - lidar_data: данные с лидара (должны содержать distances_mm)
+        - mode: "auto", "test_box", "truck"
         """
         distances = lidar_data.get("distances_mm", [])
-        points_count = lidar_data.get("points_count", 0)
-        floor_level = lidar_data.get("floor_level_mm", 0)
         
-        # 1. Если точек очень мало - скорее всего пусто
-        if points_count < 10:
+        if not distances:
             return {
                 "is_empty": True,
-                "confidence": 85,
-                "reason": f"Маловато точек: {points_count}",
-                "points_count": points_count
+                "confidence": 100,
+                "reason": "Нет данных",
+                "points_count": 0,
+                "object_type": "unknown"
             }
         
-        # 2. Анализируем разброс высот
-        if distances:
-            max_dist = max(distances)
-            min_dist = min(distances)
-            spread = max_dist - min_dist
-            
-            # Если разброс меньше 50 мм - поверхность ровная (возможно дно)
-            if spread < 50:
-                return {
-                    "is_empty": True,
-                    "confidence": 70,
-                    "reason": f"Ровная поверхность (разброс {spread} мм)",
-                    "points_count": points_count
-                }
-        
-        # 3. Сравниваем с эталоном пустого объекта
-        empty_threshold = cls._get_empty_threshold(lidar_data)
-        if points_count < empty_threshold:
+        # Если в данных уже есть результат анализа, используем его
+        if "is_empty" in lidar_data and "empty_confidence" in lidar_data:
+            logger.info("Использую готовый результат анализа из данных")
             return {
-                "is_empty": True,
-                "confidence": 75,
-                "reason": f"Точек меньше порога ({points_count} < {empty_threshold})",
-                "points_count": points_count
+                "is_empty": lidar_data.get("is_empty", True),
+                "confidence": lidar_data.get("empty_confidence", 80),
+                "reason": lidar_data.get("empty_reason", "Анализ выполнен"),
+                "points_count": lidar_data.get("points_count", len(distances)),
+                "object_type": lidar_data.get("object_type", "unknown"),
+                "height_mm": lidar_data.get("object_height_mm", 0)
             }
         
-        # 4. По умолчанию - не пусто
+        # Автоопределение режима по количеству точек
+        if mode == "auto":
+            points_count = len(distances)
+            if points_count < 50:
+                mode = "test_box"
+                logger.info(f"Автоопределение: режим TEST_BOX (точек: {points_count})")
+            else:
+                mode = "truck"
+                logger.info(f"Автоопределение: режим TRUCK (точек: {points_count})")
+        
+        # Используем ObjectDetector для анализа
+        result = ObjectDetector.process_scan(distances, {"mode": mode})
+        
         return {
-            "is_empty": False,
-            "confidence": 80,
-            "reason": f"Обнаружен объект ({points_count} точек)",
-            "points_count": points_count
+            "is_empty": result.get("is_empty", True),
+            "confidence": result.get("confidence", 80),
+            "reason": result.get("reason", "Анализ завершен"),
+            "points_count": result.get("points_count", len(distances)),
+            "object_type": result.get("object_type", "unknown"),
+            "height_mm": result.get("height_mm", 0)
         }
     
     @classmethod
-    def _get_empty_threshold(cls, data: Dict) -> int:
-        """
-        Возвращает порог точек для определения пустоты
-        В зависимости от типа объекта (коробка/грузовик)
-        """
-        # Для коробки (тест)
-        if data.get("type") == "box":
-            return 15
-        # Для грузовика
-        return 50
-    
-    @classmethod
     def get_empty_probability(cls, lidar_data: Dict) -> float:
-        """
-        Возвращает вероятность того, что объект пустой (0-100%)
-        """
-        distances = lidar_data.get("distances_mm", [])
-        points_count = lidar_data.get("points_count", 0)
-        
-        if points_count == 0:
-            return 100.0
-        
-        # Чем меньше точек, тем выше вероятность пустоты
-        max_points = 150  # максимальное ожидаемое количество точек для заполненного
-        probability = max(0, 100 - (points_count / max_points * 100))
-        
-        # Корректировка на основе разброса высот
-        if distances and len(distances) > 5:
-            spread = max(distances) - min(distances)
-            if spread < 50:  # очень ровно
-                probability = min(100, probability + 20)
-        
-        return round(probability, 1)
+        """Возвращает вероятность пустоты (0-100%)"""
+        result = cls.is_empty(lidar_data)
+        return result["confidence"]

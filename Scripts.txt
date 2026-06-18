@@ -16,3 +16,31 @@ uvicorn app.main:app --reload --port 8000
 переменная    set DATABASE_URL=postgresql://weight_user:weight_pass@localhost:5433/weight_control
 
 старт контейнера docker start weight_control_db
+
+# Добавляем новый грузовик в базу
+self.add_profile(VehicleProfile(
+    name="КАМАЗ 5490",           # название
+    vehicle_type="truck",        # тип
+    brand="КАМАЗ",               # марка
+    model="5490",                # модель
+    length_m=6.8,                # длина кузова
+    width_m=2.55,                # ширина кузова
+    height_m=2.3,                # высота кузова
+    empty_height_mm=380,         # высота бортов
+    points_range=(130, 500),     # ожидаемое количество точек
+    spread_range=(600, 2500)     # ожидаемый разброс
+))
+
+self.add_profile(VehicleProfile(
+    name="Коробка 40x60",
+    vehicle_type="box",
+    length_m=0.4,
+    width_m=0.6,
+    height_m=0.3,
+    points_range=(8, 50),
+    spread_range=(30, 300),
+    empty_height_mm=0
+))
+
+
+curl http://localhost:8000/api/health

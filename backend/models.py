@@ -211,8 +211,8 @@ class LidarMeasurement(Base):
     
     # Данные сканирования
     points_count = Column(Integer)
-    distances_mm = Column(JSON)  # массив расстояний
-    distances_m = Column(JSON)   # массив расстояний в метрах
+    distances_mm = Column(JSON)
+    distances_m = Column(JSON)
     
     # Расчёты
     volume_m3 = Column(Float)
@@ -227,7 +227,8 @@ class LidarMeasurement(Base):
     
     # Статус
     is_empty = Column(Boolean, default=False)
-    empty_confidence = Column(Integer)
+    empty_confidence = Column(Integer, default=0)
+    empty_reason = Column(String(255), nullable=True)  
     
     # Связи
-    trip = relationship("Trip", back_populates="lidar_measurements")    
+    trip = relationship("Trip", back_populates="lidar_measurements") 

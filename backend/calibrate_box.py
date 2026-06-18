@@ -48,7 +48,7 @@ def calibrate():
     print(f"   Ошибка: {abs(measured_height_cm - REAL_HEIGHT_CM):.1f} см")
     print(f"   Относительная ошибка: {abs(measured_height_cm - REAL_HEIGHT_CM) / REAL_HEIGHT_CM * 100:.1f}%")
     
-    print(f"\n📦 ОБЪЁМ:")
+    print(f"\n ОБЪЁМ:")
     print(f"   Реальный объём: {real_volume_liters:.0f} литров")
     print(f"   Измеренный объём: {measured_volume_liters:.0f} литров")
     print(f"   Ошибка: {abs(measured_volume_liters - real_volume_liters):.0f} литров")

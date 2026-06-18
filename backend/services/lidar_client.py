@@ -143,47 +143,26 @@ class LidarClient:
         logger.info(f"Фильтрация угла: {total} → {keep} точек (сектор 70°)")
         return distances_mm[start:end]
 
-    def separate_object_from_floor(self, distances_mm: List[int], floor_margin_mm: int = 150) -> Dict[str, Any]:
+    def separate_object_from_floor(self, distances_mm: List[int], mode: str = "auto") -> Dict[str, Any]:
         """
-        Отделяет объект (коробку) от пола.
-
-        Алгоритм:
-        1. Находим уровень пола (максимальное расстояние)
-        2. Отбрасываем точки пола (значительно дальше объекта)
-        3. Возвращаем ВСЕ точки объекта (без выделения непрерывной области)
-
-        Параметры:
-        - distances_mm: массив расстояний в мм
-        - floor_margin_mm: запас от пола для определения объекта (по умолч. 150мм = 15см)
-
-        Возвращает:
-        - словарь с отфильтрованными расстояниями и статистикой
+        Отделяет объект от пола (обертка над ObjectDetector для обратной совместимости)
         """
-        if not distances_mm:
-            return {"distances": [], "floor_level_mm": 0, "object_detected": False, "object_width_points": 0}
-
-        # 1. Находим уровень пола (максимальное расстояние - фон)
-        floor_level_mm = max(distances_mm)
-
-        # 2. Порог для объекта: всё, что ближе к лидару на floor_margin_mm
-        object_threshold_mm = floor_level_mm - floor_margin_mm
-
-        logger.info(f"Уровень пола: {floor_level_mm}мм, порог объекта: {object_threshold_mm}мм")
-
-        # 3. Оставляем ТОЛЬКО точки объекта (пол не добавляем)
-        object_distances = []
-        for dist in distances_mm:
-            if dist < object_threshold_mm:
-                object_distances.append(dist)
-
-        # 4. Логируем результат
-        logger.info(f"Отделение от пола: исходных={len(distances_mm)}, точек объекта={len(object_distances)}")
-
+        from services.object_detector import ObjectDetector
+    
+        if mode == "auto":
+            mode = "test_box" if len(distances_mm) < 50 else "truck"
+    
+        analysis = ObjectDetector.process_scan(distances_mm, {"mode": mode})
+    
         return {
-            "distances": object_distances,
-            "floor_level_mm": floor_level_mm,
-            "object_detected": len(object_distances) > 5,  # хотя бы 5 точек
-            "object_width_points": len(object_distances)
+            "distances": analysis.get("points", distances_mm),
+            "floor_level_mm": analysis.get("floor_level_mm", 0),
+            "object_detected": analysis.get("object_detected", False),
+            "is_empty": analysis.get("is_empty", True),
+            "confidence": analysis.get("confidence", 80),
+            "reason": analysis.get("reason", ""),
+            "object_type": analysis.get("object_type", "unknown"),
+            "height_mm": analysis.get("height_mm", 0)
         }
 
     def get_current_angle_range_hex(self) -> Optional[Dict[str, Any]]:
@@ -216,14 +195,14 @@ class LidarClient:
             logger.error(f"Ошибка получения угла: {e}")
             return None
 
-    def parse_scan_data(self, raw_data: str, filter_angle: bool = True, separate_object: bool = True) -> Dict[str, Any]:
+    def parse_scan_data(self, raw_data: str, filter_angle: bool = True, separate_object: bool = True, mode: str = "auto") -> Dict[str, Any]:
         """Парсинг данных лидара с фильтрацией угла и отделением объекта от пола"""
         try:
             if not raw_data:
                 return {"error": "Нет данных", "valid": False}
-            
+        
             parts = raw_data.split()
-            
+        
             result = {
                 "valid": True,
                 "timestamp": time.time(),
@@ -233,9 +212,14 @@ class LidarClient:
                 "points_count": 0,
                 "is_filtered": False,
                 "object_detected": False,
-                "floor_level_mm": 0
+                "floor_level_mm": 0,
+                "is_empty": True,            # по умолчанию считаем пустым
+                "empty_confidence": 0,
+                "empty_reason": "",
+                "object_type": "unknown",
+                "object_height_mm": 0
             }
-            
+        
             # Ищем DIST1
             for i, part in enumerate(parts):
                 if part == "DIST1" and i + 1 < len(parts):
@@ -253,7 +237,7 @@ class LidarClient:
                             pass
                         j += 1
                     break
-            
+        
             # 1. Фильтрация угла (от -35° до +35°)
             if filter_angle and result["distances_mm_raw"]:
                 result["distances_mm"] = self.filter_to_70_degrees(result["distances_mm_raw"])
@@ -261,20 +245,47 @@ class LidarClient:
                 logger.info(f"Фильтрация угла: {len(result['distances_mm_raw'])} → {len(result['distances_mm'])} точек")
             else:
                 result["distances_mm"] = result["distances_mm_raw"]
-            
-            # 2. Отделение объекта от пола
+        
+            # 2. Используем ObjectDetector для анализа (новый подход)
             if separate_object and result["distances_mm"]:
-                separation = self.separate_object_from_floor(result["distances_mm"])
-                result["distances_mm"] = separation["distances"]
-                result["floor_level_mm"] = separation["floor_level_mm"]
-                result["object_detected"] = separation["object_detected"]
-                logger.info(f"Отделение объекта: обнаружен={result['object_detected']}, точек={len(result['distances_mm'])}")
+                from services.object_detector import ObjectDetector
             
+                # Определяем режим автоматически или используем переданный
+                if mode == "auto":
+                    # Если точек мало - скорее всего тестируем коробку
+                    if len(result["distances_mm"]) < 50:
+                        detection_mode = "test_box"
+                        logger.info("Автоопределение: режим TEST_BOX")
+                    else:
+                        detection_mode = "truck"
+                        logger.info("Автоопределение: режим TRUCK")
+                else:
+                    detection_mode = mode
+            
+                # Запускаем полный анализ через ObjectDetector
+                analysis = ObjectDetector.process_scan(result["distances_mm"], {"mode": detection_mode})
+            
+                # Обновляем результат данными из анализа
+                result["object_detected"] = analysis.get("object_detected", False)
+                result["floor_level_mm"] = analysis.get("floor_level_mm", 0)
+                result["is_empty"] = analysis.get("is_empty", True)
+                result["empty_confidence"] = analysis.get("confidence", 80)
+                result["empty_reason"] = analysis.get("reason", "")
+                result["object_type"] = analysis.get("object_type", "unknown")
+                result["object_height_mm"] = analysis.get("height_mm", 0)
+            
+                # Если объект обнаружен, используем его точки вместо всех точек
+                if result["object_detected"] and "points" in analysis:
+                    result["distances_mm"] = analysis["points"]
+                    logger.info(f"Объект обнаружен: {result['object_type']}, точек={len(result['distances_mm'])}")
+                else:
+                    logger.warning(f"Объект не обнаружен: {analysis.get('reason', 'неизвестно')}")
+        
             # 3. Вычисляем статистику на основе итоговых данных
             if result["distances_mm"]:
                 result["distances_m"] = [round(d/1000, 2) for d in result["distances_mm"]]
                 result["points_count"] = len(result["distances_mm"])
-                
+            
                 valid_dist = [d for d in result["distances_mm"] if 0 < d < 50000]
                 if valid_dist:
                     result["min_distance_mm"] = min(valid_dist)
@@ -283,11 +294,16 @@ class LidarClient:
                     result["min_distance_m"] = round(min(valid_dist)/1000, 2)
                     result["max_distance_m"] = round(max(valid_dist)/1000, 2)
                     result["avg_distance_m"] = round(sum(valid_dist)/len(valid_dist)/1000, 2)
-            
+        
+            # Логируем результат для отладки
+            logger.info(f"📊 Результат анализа: объект={result['object_detected']}, "
+                       f"пустой={result['is_empty']}, уверенность={result['empty_confidence']}%, "
+                       f"тип={result['object_type']}, высота={result['object_height_mm']}мм")
+        
             return result
-            
+        
         except Exception as e:
-            logger.error(f"Ошибка парсинга: {e}")
+            logger.error(f"Ошибка парсинга: {e}", exc_info=True)
             return {"error": str(e), "valid": False}
 
     def disconnect(self):
