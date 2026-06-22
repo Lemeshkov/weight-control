@@ -1,11 +1,10 @@
+
 # backend/services/lidar_client.py
 import socket
 import time
 import logging
-import json
-import os
 from typing import Optional, Dict, Any, List
-from services.empty_detector import EmptyDetector
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
@@ -15,16 +14,27 @@ class LidarClient:
         self.port = port
         self.sock: Optional[socket.socket] = None
         self.is_connected = False
+        
+        # ═══════════════════════════════════════════════════════════
+        #  НАСТРОЙКИ ФИЛЬТРАЦИИ (ОБНОВЛЕНЫ ПО РЕЗУЛЬТАТАМ ТЕСТА)
+        # ═══════════════════════════════════════════════════════════
+        self.MIN_VALID_DISTANCE = 100    # мм - минимальное реальное расстояние
+        self.MAX_VALID_DISTANCE = 3000   # мм - максимальное реальное расстояние
+        self.FLOOR_THRESHOLD = 150       # мм - отсечение пола (увеличено для надежности)
+        self.MIN_POINTS_FOR_OBJECT = 5   # Минимум точек для объекта
+        
+        #  ПОРОГИ ОПРЕДЕЛЕНИЯ ПУСТОТЫ (НА ОСНОВЕ ТЕСТА)
+        # no_object: 15 точек, empty: 24 точки, filled: 39 точек
+        self.EMPTY_POINTS_THRESHOLD = 10   # Если <= 20 точек - пусто
+        self.FILLED_POINTS_THRESHOLD = 17 # Если >= 30 точек - заполнено
 
     def connect(self) -> bool:
-        """Подключение к лидару"""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(5)
             self.sock.connect((self.host, self.port))
             logger.info(f"✅ Подключен к {self.host}:{self.port}")
             
-            # Отправляем команды (как в тестовом скрипте)
             self._send_raw("sMN SetAccessMode 3 F4724744")
             time.sleep(0.2)
             self._send_raw("sMN Run")
@@ -39,7 +49,6 @@ class LidarClient:
             return False
 
     def _send_raw(self, cmd: str) -> Optional[str]:
-        """Отправка команды и получение ответа (как в тестовом скрипте)"""
         if not self.sock:
             return None
         
@@ -60,13 +69,11 @@ class LidarClient:
             return None
 
     def get_scan_data(self) -> Optional[str]:
-        """Получить данные сканирования"""
         if not self.sock or not self.is_connected:
             logger.error("Нет соединения")
             return None
         
         try:
-            # Отправляем команду как в тестовом скрипте
             full_cmd = f"\x02sRN LMDscandata\x03"
             self.sock.send(full_cmd.encode('utf-8'))
             time.sleep(0.3)
@@ -87,44 +94,6 @@ class LidarClient:
         except Exception as e:
             logger.error(f"Ошибка: {e}")
             return None
-        
-    def get_current_angle_range(self) -> Optional[Dict[str, Any]]:
-        """
-        Проверить текущие настройки угла сканирования
-        Команда: sRN LMPoutputRange
-        Ответ: sRA LMPoutputRange 1 +5000 -3500 +3500
-        где: +5000 = 0.5° разрешение, -3500 = -35°, +3500 = +35°
-        """
-        try:
-            response = self._send_raw("sRN LMPoutputRange")
-            if response and "sRA LMPoutputRange" in response:
-                parts = response.split()
-                # sRA LMPoutputRange 1 +5000 -3500 +3500
-                if len(parts) >= 5:
-                    return {
-                        "resolution_raw": parts[2],
-                        "resolution_deg": int(parts[2]) / 10000,
-                        "start_angle_raw": parts[3],
-                        "start_angle_deg": int(parts[3]) / 100,
-                        "stop_angle_raw": parts[4],
-                        "stop_angle_deg": int(parts[4]) / 100,
-                        "total_angle_deg": (int(parts[4]) - int(parts[3])) / 100
-                    }
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка получения угла: {e}")
-            return None
-
-    def _hex_to_signed_int(self, hex_str: str) -> int:
-        """Преобразует HEX строку в знаковое целое"""
-        try:
-            val = int(hex_str, 16)
-            # Если это 32-битное число и старший бит = 1, оно отрицательное
-            if val > 0x7FFFFFFF:
-                val = val - 0x100000000
-            return val
-        except ValueError:
-            return 0
 
     def filter_to_70_degrees(self, distances_mm: list) -> list:
         """Оставляет только центральный сектор 70° (от -35° до +35°)"""
@@ -132,7 +101,6 @@ class LidarClient:
             return []
         
         total = len(distances_mm)
-        # Полный угол 190°, нужен 70° → оставляем 36.8% точек
         keep = int(total * 70 / 190)
         if keep % 2 == 0:
             keep -= 1
@@ -140,63 +108,12 @@ class LidarClient:
         start = (total - keep) // 2
         end = start + keep
         
-        logger.info(f"Фильтрация угла: {total} → {keep} точек (сектор 70°)")
         return distances_mm[start:end]
 
-    def separate_object_from_floor(self, distances_mm: List[int], mode: str = "auto") -> Dict[str, Any]:
-        """
-        Отделяет объект от пола (обертка над ObjectDetector для обратной совместимости)
-        """
-        from services.object_detector import ObjectDetector
-    
-        if mode == "auto":
-            mode = "test_box" if len(distances_mm) < 50 else "truck"
-    
-        analysis = ObjectDetector.process_scan(distances_mm, {"mode": mode})
-    
-        return {
-            "distances": analysis.get("points", distances_mm),
-            "floor_level_mm": analysis.get("floor_level_mm", 0),
-            "object_detected": analysis.get("object_detected", False),
-            "is_empty": analysis.get("is_empty", True),
-            "confidence": analysis.get("confidence", 80),
-            "reason": analysis.get("reason", ""),
-            "object_type": analysis.get("object_type", "unknown"),
-            "height_mm": analysis.get("height_mm", 0)
-        }
-
-    def get_current_angle_range_hex(self) -> Optional[Dict[str, Any]]:
-        """
-        Проверить текущие настройки угла сканирования (HEX версия)
-        Ответ: sRA LMPoutputRange 1 1388 FFFF3CB0 1C3A90
-        где: 1388 = 5000 (0.5°), FFFF3CB0 = -3500 (-35°), 1C3A90 = 1850000
-        """
-        try:
-            response = self._send_raw("sRN LMPoutputRange")
-            if response and "sRA LMPoutputRange" in response:
-                parts = response.split()
-                # sRA LMPoutputRange 1 1388 FFFF3CB0 1C3A90
-                if len(parts) >= 5:
-                    resolution_raw = int(parts[2], 16)
-                    start_raw = self._hex_to_signed_int(parts[3])
-                    stop_raw = self._hex_to_signed_int(parts[4])
-                    
-                    return {
-                        "resolution_raw": hex(resolution_raw),
-                        "resolution_deg": resolution_raw / 10000,
-                        "start_angle_raw": hex(start_raw & 0xFFFFFFFF) if start_raw < 0 else hex(start_raw),
-                        "start_angle_deg": start_raw / 100,
-                        "stop_angle_raw": hex(stop_raw),
-                        "stop_angle_deg": stop_raw / 100,
-                        "total_angle_deg": (stop_raw - start_raw) / 100
-                    }
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка получения угла: {e}")
-            return None
-
     def parse_scan_data(self, raw_data: str, filter_angle: bool = True, separate_object: bool = True, mode: str = "auto") -> Dict[str, Any]:
-        """Парсинг данных лидара с фильтрацией угла и отделением объекта от пола"""
+        """
+        Парсинг данных лидара с ПРАВИЛЬНОЙ ФИЛЬТРАЦИЕЙ
+        """
         try:
             if not raw_data:
                 return {"error": "Нет данных", "valid": False}
@@ -206,21 +123,23 @@ class LidarClient:
             result = {
                 "valid": True,
                 "timestamp": time.time(),
-                "distances_mm_raw": [],      # сырые данные
-                "distances_mm": [],          # отфильтрованные
+                "distances_mm_raw": [],
+                "distances_mm": [],
                 "distances_m": [],
                 "points_count": 0,
                 "is_filtered": False,
                 "object_detected": False,
                 "floor_level_mm": 0,
-                "is_empty": True,            # по умолчанию считаем пустым
+                "is_empty": True,
                 "empty_confidence": 0,
                 "empty_reason": "",
                 "object_type": "unknown",
                 "object_height_mm": 0
             }
         
-            # Ищем DIST1
+            # ═══════════════════════════════════════════════════════════
+            # 1. ПАРСИНГ DIST1 С ЖЕСТКОЙ ФИЛЬТРАЦИЕЙ МУСОРА
+            # ═══════════════════════════════════════════════════════════
             for i, part in enumerate(parts):
                 if part == "DIST1" and i + 1 < len(parts):
                     j = i + 1
@@ -231,57 +150,123 @@ class LidarClient:
                                 value = int(hex_val, 16)
                                 if value > 0x7FFFFFFF:
                                     value = value - 0x100000000
-                                if 0 <= value <= 50000:
+                                
+                                # ⭐ ЖЕСТКАЯ ФИЛЬТРАЦИЯ:
+                                # 1. Только положительные значения
+                                # 2. Не слишком маленькие (убираем 0 и шум)
+                                # 3. Не слишком большие (убираем мусор > 5000)
+                                if 100 < value < 5000:
                                     result["distances_mm_raw"].append(value)
                         except ValueError:
                             pass
                         j += 1
                     break
         
-            # 1. Фильтрация угла (от -35° до +35°)
+            logger.info(f"📊 Сырых точек (после базовой фильтрации): {len(result['distances_mm_raw'])}")
+        
+            # ═══════════════════════════════════════════════════════════
+            # 2. ФИЛЬТРАЦИЯ УГЛА (70°)
+            # ═══════════════════════════════════════════════════════════
             if filter_angle and result["distances_mm_raw"]:
-                result["distances_mm"] = self.filter_to_70_degrees(result["distances_mm_raw"])
-                result["is_filtered"] = True
-                logger.info(f"Фильтрация угла: {len(result['distances_mm_raw'])} → {len(result['distances_mm'])} точек")
+                filtered_angle = self.filter_to_70_degrees(result["distances_mm_raw"])
+                logger.info(f"📊 После фильтрации угла: {len(filtered_angle)} точек")
+                current_points = filtered_angle
             else:
-                result["distances_mm"] = result["distances_mm_raw"]
+                current_points = result["distances_mm_raw"]
         
-            # 2. Используем ObjectDetector для анализа (новый подход)
-            if separate_object and result["distances_mm"]:
-                from services.object_detector import ObjectDetector
-            
-                # Определяем режим автоматически или используем переданный
-                if mode == "auto":
-                    # Если точек мало - скорее всего тестируем коробку
-                    if len(result["distances_mm"]) < 50:
-                        detection_mode = "test_box"
-                        logger.info("Автоопределение: режим TEST_BOX")
+            # ═══════════════════════════════════════════════════════════
+            # 3. ФИЛЬТРАЦИЯ ПО РАССТОЯНИЮ (убираем шум)
+            # ═══════════════════════════════════════════════════════════
+            if current_points:
+                valid_points = [d for d in current_points 
+                               if self.MIN_VALID_DISTANCE <= d <= self.MAX_VALID_DISTANCE]
+                
+                if valid_points:
+                    logger.info(f"🔍 После фильтрации расстояний: {len(valid_points)} точек")
+                    current_points = valid_points
+                else:
+                    current_points = []
+                    logger.warning("⚠️ Нет валидных точек после фильтрации расстояний")
+        
+            # ═══════════════════════════════════════════════════════════
+            # 4. ОТСЕЧЕНИЕ ПОЛА И ДЕТЕКЦИЯ ОБЪЕКТА
+            # ═══════════════════════════════════════════════════════════
+            if current_points and separate_object:
+                # ⭐ УРОВЕНЬ ПОЛА: самое частое значение в ДИАПАЗОНЕ 1500-3000 мм
+                # Это исключает мусор и дает реальный пол
+                floor_candidates = [d for d in current_points if 1500 <= d <= 3000]
+                
+                if floor_candidates:
+                    counter = Counter(floor_candidates)
+                    floor_level = counter.most_common(1)[0][0]
+                    logger.info(f"🏗️ Уровень пола (из диапазона 1500-3000): {floor_level} мм")
+                else:
+                    # Fallback: самое частое значение
+                    counter = Counter(current_points)
+                    floor_level = counter.most_common(1)[0][0]
+                    logger.info(f"🏗️ Уровень пола (fallback): {floor_level} мм")
+                
+                result["floor_level_mm"] = floor_level
+                
+                # Отсекаем пол - все что дальше от пола чем порог
+                object_points = [d for d in current_points if d < floor_level - self.FLOOR_THRESHOLD]
+                
+                if object_points:
+                    min_dist = min(object_points)
+                    object_height = floor_level - min_dist
+                    points_count = len(object_points)
+                    
+                    logger.info(f"📦 Объект: {points_count} точек, высота={object_height} мм")
+                    
+                    # ═══════════════════════════════════════════════════════════
+                    # ⭐ ОПРЕДЕЛЯЕМ ПУСТОТУ ПО НОВЫМ ПОРОГАМ (ИЗ ТЕСТА)
+                    # ═══════════════════════════════════════════════════════════
+                    if points_count <= self.EMPTY_POINTS_THRESHOLD:
+                        is_empty = True
+                        confidence = 90
+                        reason = f"Мало точек: {points_count} (пусто)"
+                        object_type = "empty"
+                    elif points_count >= self.FILLED_POINTS_THRESHOLD:
+                        is_empty = False
+                        confidence = 85
+                        reason = f"Много точек: {points_count} (заполнено)"
+                        object_type = "box"
                     else:
-                        detection_mode = "truck"
-                        logger.info("Автоопределение: режим TRUCK")
+                        # Промежуточная зона
+                        if points_count < 25:
+                            is_empty = True
+                            confidence = 70
+                            reason = f"Промежуточное точек: {points_count} (скорее пусто)"
+                            object_type = "empty"
+                        else:
+                            is_empty = False
+                            confidence = 65
+                            reason = f"Промежуточное точек: {points_count} (скорее заполнено)"
+                            object_type = "box"
+                    
+                    result["distances_mm"] = object_points
+                    result["is_empty"] = is_empty
+                    result["empty_confidence"] = confidence
+                    result["empty_reason"] = reason
+                    result["object_type"] = object_type
+                    result["object_height_mm"] = object_height
+                    result["object_detected"] = True
+                    
+                    logger.info(f"✅ Результат: {reason}")
                 else:
-                    detection_mode = mode
-            
-                # Запускаем полный анализ через ObjectDetector
-                analysis = ObjectDetector.process_scan(result["distances_mm"], {"mode": detection_mode})
-            
-                # Обновляем результат данными из анализа
-                result["object_detected"] = analysis.get("object_detected", False)
-                result["floor_level_mm"] = analysis.get("floor_level_mm", 0)
-                result["is_empty"] = analysis.get("is_empty", True)
-                result["empty_confidence"] = analysis.get("confidence", 80)
-                result["empty_reason"] = analysis.get("reason", "")
-                result["object_type"] = analysis.get("object_type", "unknown")
-                result["object_height_mm"] = analysis.get("height_mm", 0)
-            
-                # Если объект обнаружен, используем его точки вместо всех точек
-                if result["object_detected"] and "points" in analysis:
-                    result["distances_mm"] = analysis["points"]
-                    logger.info(f"Объект обнаружен: {result['object_type']}, точек={len(result['distances_mm'])}")
-                else:
-                    logger.warning(f"Объект не обнаружен: {analysis.get('reason', 'неизвестно')}")
+                    result["distances_mm"] = []
+                    result["is_empty"] = True
+                    result["empty_confidence"] = 100
+                    result["empty_reason"] = "Нет точек объекта (пол)"
+                    result["object_type"] = "empty"
+                    result["object_detected"] = False
+                    logger.info("📭 Объект не обнаружен")
+            else:
+                result["distances_mm"] = current_points or []
         
-            # 3. Вычисляем статистику на основе итоговых данных
+            # ═══════════════════════════════════════════════════════════
+            # 5. СТАТИСТИКА
+            # ═══════════════════════════════════════════════════════════
             if result["distances_mm"]:
                 result["distances_m"] = [round(d/1000, 2) for d in result["distances_mm"]]
                 result["points_count"] = len(result["distances_mm"])
@@ -295,11 +280,7 @@ class LidarClient:
                     result["max_distance_m"] = round(max(valid_dist)/1000, 2)
                     result["avg_distance_m"] = round(sum(valid_dist)/len(valid_dist)/1000, 2)
         
-            # Логируем результат для отладки
-            logger.info(f"📊 Результат анализа: объект={result['object_detected']}, "
-                       f"пустой={result['is_empty']}, уверенность={result['empty_confidence']}%, "
-                       f"тип={result['object_type']}, высота={result['object_height_mm']}мм")
-        
+            logger.info(f"📊 Итог: точек={result['points_count']}, пусто={result['is_empty']}")
             return result
         
         except Exception as e:
@@ -307,7 +288,6 @@ class LidarClient:
             return {"error": str(e), "valid": False}
 
     def disconnect(self):
-        """Отключение"""
         if self.sock:
             try:
                 self.sock.close()
@@ -317,14 +297,14 @@ class LidarClient:
             logger.info("🔌 Отключен")
 
     def check_if_empty(self, scan_data: Dict) -> Dict:
-        """
-        Проверяет, пустой ли кузов/коробка
-        """
+        from services.empty_detector import EmptyDetector
         return EmptyDetector.is_empty(scan_data)
     
     def get_empty_status(self, scan_data: Dict) -> str:
-        """
-        Возвращает текстовый статус: "empty" или "occupied"
-        """
+        from services.empty_detector import EmptyDetector
         result = EmptyDetector.is_empty(scan_data)
         return "empty" if result["is_empty"] else "occupied"
+
+
+# Глобальный экземпляр
+lidar_client = LidarClient()

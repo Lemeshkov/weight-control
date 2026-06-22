@@ -1,0 +1,29 @@
+{
+  "timestamp": "20260622_063921",
+  "results": [
+    {
+      "scenario": "no_object",
+      "object_count": 15,
+      "floor_level": 1443,
+      "filtered_count": 380
+    },
+    {
+      "scenario": "box_empty",
+      "object_count": 24,
+      "floor_level": 1430,
+      "filtered_count": 380
+    },
+    {
+      "scenario": "box_filled",
+      "object_count": 39,
+      "floor_level": 1471,
+      "filtered_count": 380
+    }
+  ],
+  "recommendations": {
+    "avg_object_points": 26.0,
+    "floor_threshold": 100,
+    "min_distance": 100,
+    "max_distance": 3000
+  }
+}

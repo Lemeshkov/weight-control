@@ -57,31 +57,28 @@ async def start_trip(db: Session = Depends(get_db)):
     """Начать новый рейс (въезд)"""
     data = await uniserver_client.get_current_weighting()
     
-    # ✅ Добавляем логирование для отладки
-    logger.info(f"📊 Данные с весов: type={data.get('weight_type')}, weight={data.get('weight')}кг, stable={data.get('is_stable')}")
-    
     if not data:
         raise HTTPException(status_code=503, detail="Cannot connect to UniServer")
     
-    # ✅ Проверяем стабильность
+    # Логируем данные
+    logger.info(f"📊 Данные с весов: type={data.get('weight_type')}, weight={data.get('weight')}кг, stable={data.get('is_stable')}")
+    
+    # Проверяем стабильность
     if not data.get('is_stable', False):
         logger.warning(f"⚠️ Весы нестабильны, но продолжаем...")
-        # Не прерываем, а только логируем
     
-    # ✅ Проверяем тип взвешивания
+    # Проверяем тип взвешивания
     weight_type = data.get('weight_type', '')
     weight = data.get('weight', 0)
     plate_number = data.get('plate_number', '')
+    doc_id = data.get('doc_id', '')  # ← Уникальный код из UniServer
     
-    # Логируем для отладки
-    logger.info(f"🔍 Проверка: тип={weight_type}, вес={weight}кг, номер={plate_number}")
+    logger.info(f"🔍 Проверка: тип={weight_type}, вес={weight}кг, номер={plate_number}, doc_id={doc_id}")
     
     # Если тип не "БРУТТО" и вес > 0 - возможно это брутто с другим названием
     if weight_type not in ["БРУТТО", "BRUTTO", "GROSS"]:
-        # Если вес > 0 и номер есть - скорее всего это брутто
         if weight > 0 and plate_number:
             logger.warning(f"⚠️ Тип '{weight_type}' интерпретируется как БРУТТО (вес={weight}кг)")
-            # Продолжаем
         else:
             raise HTTPException(
                 status_code=400, 
@@ -96,6 +93,27 @@ async def start_trip(db: Session = Depends(get_db)):
     if not plate_number or plate_number.strip() == "":
         raise HTTPException(status_code=400, detail="Plate number is empty")
     
+    # ✅ Проверяем, есть ли уже рейс с таким uniserver_code (предотвращение дубликатов)
+    if doc_id:
+        existing_by_code = db.query(models.Trip).filter(
+            models.Trip.uniserver_code == doc_id
+        ).first()
+        
+        if existing_by_code:
+            logger.warning(f"⚠️ Рейс с кодом {doc_id} уже существует (ID: {existing_by_code.id})")
+            # Если рейс уже существует, но активный - возвращаем его
+            if existing_by_code.status == models.TripStatus.ENTRY:
+                return {
+                    "trip_id": existing_by_code.id,
+                    "message": f"Рейс уже существует для {plate_number}, вес {weight}кг",
+                    "plate_number": plate_number,
+                    "weight": weight,
+                    "existing": True
+                }
+            else:
+                # Если рейс завершен - создаем новый с другим кодом
+                logger.info(f"ℹ️ Рейс с кодом {doc_id} завершен, создаем новый")
+    
     # Получаем или создаем автомобиль
     vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
     
@@ -107,18 +125,116 @@ async def start_trip(db: Session = Depends(get_db)):
     if active_trip:
         raise HTTPException(
             status_code=400,
-            detail=f"Активный рейс уже существует для автомобиля {plate_number}"
+            detail=f"Активный рейс уже существует для автомобиля {plate_number} (ID: {active_trip.id})"
         )
     
-    # Создаем рейс
-    trip = await TripCRUD.create_from_weighing(db, data)
+    # ✅ Создаем рейс с сохранением uniserver_code
+    trip = models.Trip(
+        vehicle_id=vehicle.id,
+        entry_time=datetime.now(),
+        status=models.TripStatus.ENTRY,
+        uniserver_code=doc_id if doc_id else None  # ← Сохраняем уникальный код
+    )
+    db.add(trip)
+    db.flush()
+    
+    # Создаем запись взвешивания (брутто)
+    entry = models.EntryMeasurement(
+        trip_id=trip.id,
+        weight_brutto=weight
+    )
+    db.add(entry)
+    
+    # Сохраняем событие UniServer
+    uniserver_event = models.UniserverEvent(
+        trip_id=trip.id,
+        uniserver_event_id=doc_id,
+        plate_number=plate_number,
+        weight=weight,
+        raw_message=data.get("full_response", {})
+    )
+    db.add(uniserver_event)
+    
+    db.commit()
+    db.refresh(trip)
+    
+    logger.info(f"✅ Создан рейс {trip.id} для {plate_number}, вес {weight}кг, код: {doc_id}")
     
     return {
         "trip_id": trip.id,
         "message": f"Рейс начат для {plate_number}, вес {weight}кг",
         "plate_number": plate_number,
-        "weight": weight
+        "weight": weight,
+        "uniserver_code": doc_id
     }
+
+# @router.post("/start-trip")
+# async def start_trip(db: Session = Depends(get_db)):
+#     """Начать новый рейс (въезд)"""
+#     data = await uniserver_client.get_current_weighting()
+    
+#     # ✅ Добавляем логирование для отладки
+#     logger.info(f"📊 Данные с весов: type={data.get('weight_type')}, weight={data.get('weight')}кг, stable={data.get('is_stable')}")
+    
+#     if not data:
+#         raise HTTPException(status_code=503, detail="Cannot connect to UniServer")
+    
+#     # ✅ Проверяем стабильность
+#     if not data.get('is_stable', False):
+#         logger.warning(f"⚠️ Весы нестабильны, но продолжаем...")
+#         # Не прерываем, а только логируем
+    
+#     # ✅ Проверяем тип взвешивания
+#     weight_type = data.get('weight_type', '')
+#     weight = data.get('weight', 0)
+#     plate_number = data.get('plate_number', '')
+    
+#     # Логируем для отладки
+#     logger.info(f"🔍 Проверка: тип={weight_type}, вес={weight}кг, номер={plate_number}")
+    
+#     # Если тип не "БРУТТО" и вес > 0 - возможно это брутто с другим названием
+#     if weight_type not in ["БРУТТО", "BRUTTO", "GROSS"]:
+#         # Если вес > 0 и номер есть - скорее всего это брутто
+#         if weight > 0 and plate_number:
+#             logger.warning(f"⚠️ Тип '{weight_type}' интерпретируется как БРУТТО (вес={weight}кг)")
+#             # Продолжаем
+#         else:
+#             raise HTTPException(
+#                 status_code=400, 
+#                 detail=f"Expected BRUTTO weighing, got '{weight_type}' (weight={weight}кг)"
+#             )
+    
+#     # Проверяем вес
+#     if weight <= 0:
+#         raise HTTPException(status_code=400, detail=f"Zero or negative weight: {weight}кг")
+    
+#     # Проверяем номер
+#     if not plate_number or plate_number.strip() == "":
+#         raise HTTPException(status_code=400, detail="Plate number is empty")
+    
+#     # Получаем или создаем автомобиль
+#     vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
+    
+#     # Проверяем, нет ли активного рейса
+#     active_trip = TripCRUD.get_trip_by_vehicle_and_status(
+#         db, vehicle.id, models.TripStatus.ENTRY
+#     )
+    
+#     if active_trip:
+#         raise HTTPException(
+#             status_code=400,
+#             detail=f"Активный рейс уже существует для автомобиля {plate_number}"
+#         )
+    
+#     # Создаем рейс
+#     trip = await TripCRUD.create_from_weighing(db, data)
+    
+#     return {
+#         "trip_id": trip.id,
+#         "message": f"Рейс начат для {plate_number}, вес {weight}кг",
+#         "plate_number": plate_number,
+#         "weight": weight
+#     }
 
 @router.post("/end-trip/{trip_id}")
 async def end_trip(trip_id: int, db: Session = Depends(get_db)):
@@ -151,15 +267,12 @@ async def end_trip(trip_id: int, db: Session = Depends(get_db)):
     return {"net_weight": net_weight, "message": "Trip completed"}
 
 @router.get("/trips", response_model=list[TripResponse])
-async def get_trips(
-    limit: int = 50,
-    offset: int = 0,
-    db: Session = Depends(get_db)
-):
-    """Получить список всех рейсов (включая синхронизированные)"""
-    trips = db.query(models.Trip).order_by(
-        models.Trip.entry_time.desc()
-    ).offset(offset).limit(limit).all()
+async def get_trips(db: Session = Depends(get_db)):
+    # Группируем по vehicle_id + entry_time (убираем дубликаты по времени)
+    trips = db.query(models.Trip).distinct(
+        models.Trip.vehicle_id,
+        models.Trip.entry_time
+    ).order_by(models.Trip.entry_time.desc()).limit(50).all()
     
     result = []
     for trip in trips:
@@ -527,15 +640,13 @@ async def get_journal_history(
         "records": parsed_records
     }
 
-
 @router.post("/journal/sync")
 async def sync_journal_history(
     days: int = 7,
+    limit: int = 50,  # ←  ЛИМИТ
     db: Session = Depends(get_db)
 ):
-    """
-    Синхронизировать историю из журнала UniServer с локальной БД
-    """
+    """Синхронизировать историю из журнала UniServer с локальной БД"""
     from datetime import datetime, timedelta
     
     date_to = datetime.now()
@@ -547,7 +658,7 @@ async def sync_journal_history(
     records = await uniserver_client.get_journal_records(
         date_from=date_from_str,
         date_to=date_to_str,
-        max_rows=500
+        max_rows=limit
     )
     
     if not records:
@@ -560,35 +671,65 @@ async def sync_journal_history(
         try:
             parsed = uniserver_client.parse_journal_record(record)
             plate_number = parsed.get("plate_number")
+            uniserver_code = parsed.get("code")  # ✅ Уникальный код из UniServer
             
-            if not plate_number:
+            if not plate_number or not uniserver_code:
                 skipped += 1
                 continue
             
-            # Проверяем, есть ли уже такой рейс
-            existing = db.query(models.Trip).join(models.EntryMeasurement).filter(
-                models.EntryMeasurement.weight_brutto == parsed.get("weight_brutto"),
-                models.Trip.entry_time >= date_from
+            # ✅ ПРОВЕРКА ПО УНИКАЛЬНОМУ КОДУ - ОСНОВНОЙ МЕТОД
+            existing = db.query(models.Trip).filter(
+                models.Trip.uniserver_code == uniserver_code
             ).first()
             
             if existing:
+                # Обновляем существующий рейс (если изменились данные)
+                logger.info(f"🔄 Обновление рейса {existing.id} (code: {uniserver_code})")
+                
+                # Обновляем вес если изменился
+                if parsed.get("weight_brutto", 0) > 0 and existing.entry_measurement:
+                    existing.entry_measurement.weight_brutto = parsed.get("weight_brutto")
+                
+                if parsed.get("weight_tare", 0) > 0:
+                    if existing.exit_measurement:
+                        existing.exit_measurement.weight_tare = parsed.get("weight_tare")
+                    else:
+                        exit_meas = models.ExitMeasurement(
+                            trip_id=existing.id,
+                            weight_tare=parsed.get("weight_tare")
+                        )
+                        db.add(exit_meas)
+                
+                # Обновляем статус если появился exit_time
+                if parsed.get("exit_time") and existing.status != models.TripStatus.COMPLETED:
+                    existing.status = models.TripStatus.COMPLETED
+                    try:
+                        existing.exit_time = datetime.fromisoformat(parsed["exit_time"])
+                    except:
+                        existing.exit_time = datetime.now()
+                
                 skipped += 1
                 continue
             
             # Создаем автомобиль
             vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
             
-            # Создаем рейс
-            entry_time = datetime.fromisoformat(parsed.get("entry_time")) if parsed.get("entry_time") else datetime.now()
-            exit_time = datetime.fromisoformat(parsed.get("exit_time")) if parsed.get("exit_time") else None
+            # Парсим даты
+            entry_time = None
+            if parsed.get("entry_time"):
+                try:
+                    entry_time = datetime.fromisoformat(parsed["entry_time"])
+                except:
+                    entry_time = datetime.now()
+            else:
+                entry_time = datetime.now()
             
+            # ✅ СОХРАНЯЕМ uniserver_code
             trip = models.Trip(
                 vehicle_id=vehicle.id,
                 entry_time=entry_time,
-                exit_time=exit_time,
-                status=models.TripStatus.COMPLETED if exit_time else models.TripStatus.ENTRY,
-                driver_name=parsed.get("driver_name"),
-                density_calculated=0
+                status=models.TripStatus.COMPLETED,
+                uniserver_code=uniserver_code  # ← УНИКАЛЬНЫЙ КЛЮЧ
             )
             db.add(trip)
             db.flush()
@@ -609,20 +750,11 @@ async def sync_journal_history(
                 )
                 db.add(exit_meas)
             
-            # Сохраняем событие
-            uniserver_event = models.UniserverEvent(
-                trip_id=trip.id,
-                uniserver_event_id=parsed.get("code"),
-                plate_number=plate_number,
-                weight=parsed.get("weight_brutto", 0),
-                raw_message=record
-            )
-            db.add(uniserver_event)
-            
             synced += 1
+            logger.info(f"✅ Создан рейс {trip.id} для {plate_number} (code: {uniserver_code})")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка синхронизации записи: {e}")
+            logger.error(f"❌ Ошибка синхронизации: {e}")
             skipped += 1
     
     db.commit()
@@ -633,3 +765,109 @@ async def sync_journal_history(
         "skipped": skipped,
         "total": len(records)
     }
+
+# @router.post("/journal/sync")
+# async def sync_journal_history(
+#     days: int = 7,
+#     db: Session = Depends(get_db)
+# ):
+#     """
+#     Синхронизировать историю из журнала UniServer с локальной БД
+#     """
+#     from datetime import datetime, timedelta
+    
+#     date_to = datetime.now()
+#     date_from = date_to - timedelta(days=days)
+    
+#     date_from_str = date_from.strftime("%Y-%m-%dT00:00:00.000")
+#     date_to_str = date_to.strftime("%Y-%m-%dT23:59:59.999")
+    
+#     records = await uniserver_client.get_journal_records(
+#         date_from=date_from_str,
+#         date_to=date_to_str,
+#         max_rows=500
+#     )
+    
+#     if not records:
+#         return {"status": "empty", "message": "Нет записей в журнале"}
+    
+#     synced = 0
+#     skipped = 0
+    
+#     for record in records:
+#         try:
+#             parsed = uniserver_client.parse_journal_record(record)
+#             plate_number = parsed.get("plate_number")
+            
+#             if not plate_number:
+#                 skipped += 1
+#                 continue
+            
+#             # Проверяем, есть ли уже такой рейс
+#             existing = db.query(models.Trip).join(models.EntryMeasurement).filter(
+#                 models.EntryMeasurement.weight_brutto == parsed.get("weight_brutto"),
+#                 models.Trip.entry_time >= date_from
+#             ).first()
+            
+#             if existing:
+#                 skipped += 1
+#                 continue
+            
+#             # Создаем автомобиль
+#             vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
+            
+#             # Создаем рейс
+#             entry_time = datetime.fromisoformat(parsed.get("entry_time")) if parsed.get("entry_time") else datetime.now()
+#             exit_time = datetime.fromisoformat(parsed.get("exit_time")) if parsed.get("exit_time") else None
+            
+#             trip = models.Trip(
+#                 vehicle_id=vehicle.id,
+#                 entry_time=entry_time,
+#                 exit_time=exit_time,
+#                 status=models.TripStatus.COMPLETED if exit_time else models.TripStatus.ENTRY,
+#                 driver_name=parsed.get("driver_name"),
+#                 density_calculated=0
+#             )
+#             db.add(trip)
+#             db.flush()
+            
+#             # Добавляем брутто
+#             if parsed.get("weight_brutto", 0) > 0:
+#                 entry = models.EntryMeasurement(
+#                     trip_id=trip.id,
+#                     weight_brutto=parsed.get("weight_brutto")
+#                 )
+#                 db.add(entry)
+            
+#             # Добавляем тару
+#             if parsed.get("weight_tare", 0) > 0:
+#                 exit_meas = models.ExitMeasurement(
+#                     trip_id=trip.id,
+#                     weight_tare=parsed.get("weight_tare")
+#                 )
+#                 db.add(exit_meas)
+            
+#             # Сохраняем событие
+#             uniserver_event = models.UniserverEvent(
+#                 trip_id=trip.id,
+#                 uniserver_event_id=parsed.get("code"),
+#                 plate_number=plate_number,
+#                 weight=parsed.get("weight_brutto", 0),
+#                 raw_message=record
+#             )
+#             db.add(uniserver_event)
+            
+#             synced += 1
+            
+#         except Exception as e:
+#             logger.error(f"❌ Ошибка синхронизации записи: {e}")
+#             skipped += 1
+    
+#     db.commit()
+    
+#     return {
+#         "status": "success",
+#         "synced": synced,
+#         "skipped": skipped,
+#         "total": len(records)
+#     }

@@ -141,53 +141,117 @@ class TripCRUD:
             )
         ).first()
     
+
     @staticmethod
     async def create_from_weighing(db: Session, weighing_data: dict) -> models.Trip:
         """Создать рейс из данных взвешивания"""
+    
+        plate_number = weighing_data.get("plate_number", "")
+        weight = weighing_data.get("weight", 0)
+        doc_id = weighing_data.get("doc_id", "")
+    
         # Найти или создать автомобиль
         vehicle = db.query(models.Vehicle).filter(
-            models.Vehicle.plate_number == weighing_data["plate_number"]
+            models.Vehicle.plate_number == plate_number
         ).first()
-        
+    
         if not vehicle:
-            # Автоматическое создание автомобиля при первом взвешивании
-            vehicle = models.Vehicle(
-                plate_number=weighing_data["plate_number"],
+           vehicle = models.Vehicle(
+                plate_number=plate_number,
                 is_active=True
             )
-            db.add(vehicle)
-            db.flush()
+           db.add(vehicle)
+           db.flush()
+    
+        #  Проверяем, есть ли уже рейс с таким кодом
+        if doc_id:
+            existing = db.query(models.Trip).filter(
+                models.Trip.uniserver_code == doc_id
+            ).first()
         
-        # Создать рейс
+            if existing:
+                logger.info(f"ℹ️ Рейс с кодом {doc_id} уже существует (ID: {existing.id})")
+                return existing
+    
+    # Создать рейс
         trip = models.Trip(
             vehicle_id=vehicle.id,
             entry_time=datetime.now(),
-            status=models.TripStatus.ENTRY
+            status=models.TripStatus.ENTRY,
+            uniserver_code=doc_id if doc_id else None  # ← Сохраняем код
         )
         db.add(trip)
         db.flush()
-        
-        # Создать запись взвешивания (брутто на въезде)
-        if weighing_data["weight_type"] == "БРУТТО":
+    
+    # Создать запись взвешивания (брутто на въезде)
+        if weighing_data.get("weight_type") in ["БРУТТО", "BRUTTO", "GROSS"]:
             entry = models.EntryMeasurement(
                 trip_id=trip.id,
-                weight_brutto=weighing_data["weight"]
+                weight_brutto=weight
             )
             db.add(entry)
-        
-        # Сохранить событие UniServer
+    
+    # Сохранить событие UniServer
         uniserver_event = models.UniserverEvent(
             trip_id=trip.id,
-            uniserver_event_id=weighing_data.get("doc_id", ""),
-            plate_number=weighing_data["plate_number"],
-            weight=weighing_data["weight"],
+            uniserver_event_id=doc_id,
+            plate_number=plate_number,
+            weight=weight,
             raw_message=weighing_data.get("full_response", {})
         )
         db.add(uniserver_event)
-        
+    
         db.commit()
         db.refresh(trip)
         return trip
+    
+    # @staticmethod
+    # async def create_from_weighing(db: Session, weighing_data: dict) -> models.Trip:
+    #     """Создать рейс из данных взвешивания"""
+    #     # Найти или создать автомобиль
+    #     vehicle = db.query(models.Vehicle).filter(
+    #         models.Vehicle.plate_number == weighing_data["plate_number"]
+    #     ).first()
+        
+    #     if not vehicle:
+    #         # Автоматическое создание автомобиля при первом взвешивании
+    #         vehicle = models.Vehicle(
+    #             plate_number=weighing_data["plate_number"],
+    #             is_active=True
+    #         )
+    #         db.add(vehicle)
+    #         db.flush()
+        
+    #     # Создать рейс
+    #     trip = models.Trip(
+    #         vehicle_id=vehicle.id,
+    #         entry_time=datetime.now(),
+    #         status=models.TripStatus.ENTRY
+    #     )
+    #     db.add(trip)
+    #     db.flush()
+        
+    #     # Создать запись взвешивания (брутто на въезде)
+    #     if weighing_data["weight_type"] == "БРУТТО":
+    #         entry = models.EntryMeasurement(
+    #             trip_id=trip.id,
+    #             weight_brutto=weighing_data["weight"]
+    #         )
+    #         db.add(entry)
+        
+    #     # Сохранить событие UniServer
+    #     uniserver_event = models.UniserverEvent(
+    #         trip_id=trip.id,
+    #         uniserver_event_id=weighing_data.get("doc_id", ""),
+    #         plate_number=weighing_data["plate_number"],
+    #         weight=weighing_data["weight"],
+    #         raw_message=weighing_data.get("full_response", {})
+    #     )
+    #     db.add(uniserver_event)
+        
+    #     db.commit()
+    #     db.refresh(trip)
+    #     return trip
     
     @staticmethod
     def update_exit_weighing(db: Session, trip_id: int, weighing_data: dict) -> models.Trip:

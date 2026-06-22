@@ -88,7 +88,10 @@ class Trip(Base):
     density_calculated = Column(Float)  # Расчетная плотность для рейса
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+    #  НОВОЕ ПОЛЕ - уникальный идентификатор из UniServer
+    uniserver_code = Column(String(32), unique=True, nullable=True, index=True)
     
+    # Связи
     vehicle = relationship("Vehicle", back_populates="trips")
     carrier = relationship("Carrier", back_populates="trips")
     entry_measurement = relationship("EntryMeasurement", back_populates="trip", uselist=False)
