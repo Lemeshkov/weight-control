@@ -1,4 +1,5 @@
 
+
 # backend/routers/lidar.py
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -32,7 +33,7 @@ async def startup_lidar():
     try:
         if lidar_client.connect():
             logger.info("✅ Лидар подключен")
-            configure_lidar_angle()
+            # configure_lidar_angle()чтоб не сбрасывался при старте 
         else:
             logger.warning("⚠️ Лидар не подключен")
     except Exception as e:
@@ -43,25 +44,33 @@ def configure_lidar_angle():
     try:
         if not lidar_client.sock or not lidar_client.is_connected:
             return False
-        
+
+        # ═══════════════════════════════════════════════════════════
+        # ⭐ ДЛЯ HEX-ФОРМАТА ИСПОЛЬЗУЕМ ДРУГИЕ КОМАНДЫ
+        # ═══════════════════════════════════════════════════════════
+        # Устанавливаем угол 70° (-35°…+35°)
+        # -35° = -3500 = FFFF3CB0 (в HEX)
+        # +35° = 3500 = 0DAC (в HEX)
+        # 70° = 7000 = 1B58 (в HEX)
+
         commands = [
-            "sWN LMPoutputRange 1 5000 -3500 3500",
-            "sWN LMPoutputRange 1 +5000 -3500 +3500",
+            "sWN LMPoutputRange 1 5000 FFFF3CB0 0DAC",   # ← -35°…+35°
+            "sWN LMPoutputRange 1 +5000 FFFF3CB0 +0DAC",
         ]
-        
+
         for cmd in commands:
             logger.info(f"Пробуем: {cmd}")
             result = lidar_client._send_raw(cmd)
             logger.info(f"Результат: {result}")
             time.sleep(0.2)
-        
+
         lidar_client._send_raw("sMN Logout")
         time.sleep(0.2)
         lidar_client._send_raw("sMN SetAccessMode 3 F4724744")
         time.sleep(0.2)
         lidar_client._send_raw("sMN Run")
         time.sleep(0.2)
-        
+
         logger.info("✅ Угол сканирования настроен: -35°...+35° (70°)")
         return True
     except Exception as e:
@@ -75,29 +84,21 @@ async def shutdown_lidar():
         lidar_client.disconnect()
 
 
-# backend/routers/lidar.py
-# Обновленный эндпоинт /scan с гибридным подходом
-
 @router.get("/scan")
 async def get_lidar_scan():
     """
     Получить данные сканирования с детекцией объекта
-    Гибридный подход:
-    - parse_scan_data для фильтрации и определения пустоты (проверено на практике)
-    - ObjectDetector для определения типа коробки (S/M/L)
     """
     if not lidar_client.is_connected:
         if not lidar_client.connect():
             raise HTTPException(status_code=503, detail="Лидар не подключен")
     
-    # Получаем сырые данные с лидара
     scan_data = lidar_client.get_scan_data()
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
     
     # ═══════════════════════════════════════════════════════════
-    # ⭐ ШАГ 1: Используем parse_scan_data для фильтрации и детекции
-    # Это проверенная логика с правильными порогами
+    # ШАГ 1: Фильтрация через parse_scan_data
     # ═══════════════════════════════════════════════════════════
     parsed = lidar_client.parse_scan_data(
         scan_data, 
@@ -106,11 +107,9 @@ async def get_lidar_scan():
         mode="auto"
     )
     
-    # Получаем отфильтрованные точки объекта
     object_points = parsed.get("distances_mm", [])
     points_count = len(object_points)
     
-    # Получаем статус от parse_scan_data (рабочая логика)
     is_empty = parsed.get("is_empty", True)
     empty_confidence = parsed.get("empty_confidence", 0)
     empty_reason = parsed.get("empty_reason", "")
@@ -120,8 +119,7 @@ async def get_lidar_scan():
     object_detected = parsed.get("object_detected", False)
     
     # ═══════════════════════════════════════════════════════════
-    # ШАГ 2: Определяем статус для фронтенда
-    # Используем проверенную логику из parse_scan_data
+    # ШАГ 2: Статус для фронтенда
     # ═══════════════════════════════════════════════════════════
     if points_count == 0:
         object_status = "no_object"
@@ -134,8 +132,7 @@ async def get_lidar_scan():
         status_text = "📦✅ Коробка/кузов ЗАПОЛНЕН"
     
     # ═══════════════════════════════════════════════════════════
-    # ШАГ 3: Определяем тип коробки через ObjectDetector
-    # Используем отфильтрованные точки объекта
+    # ШАГ 3: Определяем тип через ObjectDetector
     # ═══════════════════════════════════════════════════════════
     box_info = {
         "box_type": "unknown",
@@ -147,44 +144,53 @@ async def get_lidar_scan():
         "confidence": 0,
         "profile_name": None
     }
-    profile = None
+    
+    profile_obj = None
     profile_confidence = 0
+    profile_dict = None
     
     if points_count > 0:
         try:
-            # Используем ObjectDetector для определения типа
-            detection_result = ObjectDetector.process_scan(object_points)
+            detection_result = ObjectDetector.process_scan(
+                object_points, 
+                {"floor_level": floor_level_mm}
+            )
             
-            # Получаем box_info
-            box_info = detection_result.get("box_info", box_info)
-            profile = detection_result.get("profile")
+            profile_obj = detection_result.get("profile")
             profile_confidence = detection_result.get("profile_confidence", 0)
+            box_info = detection_result.get("box_info", box_info)
             
-            # ⭐ Если ObjectDetector определил коробку - обновляем статус
-            if box_info.get("detected") and box_info.get("vehicle_type") == "box":
-                box_label = box_info.get("box_label", "?")
-                size_cm = box_info.get("size_cm", {})
-                size_str = f"{size_cm.get('width', 0)}×{size_cm.get('depth', 0)}×{size_cm.get('height', 0)}"
+            if profile_obj and hasattr(profile_obj, 'to_dict'):
+                profile_dict = profile_obj.to_dict()
                 
-                if is_empty:
-                    status_text = f"📦 Коробка {box_label} ({size_str}см) ПУСТАЯ"
-                else:
-                    status_text = f"📦 Коробка {box_label} ({size_str}см) ЗАПОЛНЕНА"
+                if box_info.get("detected") and box_info.get("vehicle_type") == "box":
+                    box_label = box_info.get("box_label", "?")
+                    size_cm = box_info.get("size_cm", {})
+                    size_str = f"{size_cm.get('width', 0)}×{size_cm.get('depth', 0)}×{size_cm.get('height', 0)}"
+                    
+                    if is_empty:
+                        status_text = f"📦 Коробка {box_label} ({size_str}см) ПУСТАЯ"
+                    else:
+                        status_text = f"📦 Коробка {box_label} ({size_str}см) ЗАПОЛНЕНА"
+                elif box_info.get("detected") and box_info.get("vehicle_type") == "truck":
+                    if is_empty:
+                        status_text = f"🚛 {box_info.get('profile_name', 'Грузовик')} ПУСТОЙ"
+                    else:
+                        status_text = f"🚛 {box_info.get('profile_name', 'Грузовик')} ЗАПОЛНЕН"
             
-            # ⭐ Если ObjectDetector определил грузовик
-            elif box_info.get("detected") and box_info.get("vehicle_type") == "truck":
-                if is_empty:
-                    status_text = f"🚛 {box_info.get('profile_name', 'Грузовик')} ПУСТОЙ"
-                else:
-                    status_text = f"🚛 {box_info.get('profile_name', 'Грузовик')} ЗАПОЛНЕН"
-            
-            logger.info(f"🔍 ObjectDetector: box_info={box_info.get('box_label', '?')}, profile={profile.name if profile else 'None'}")
-            
+            # ⭐ ЛОГИРОВАНИЕ (исправлено)
+            if profile_obj and hasattr(profile_obj, 'name'):
+                logger.info(f"🔍 ObjectDetector: box_info={box_info.get('box_label', '?')}, profile={profile_obj.name}")
+            elif profile_obj and isinstance(profile_obj, dict):
+                logger.info(f"🔍 ObjectDetector: box_info={box_info.get('box_label', '?')}, profile={profile_obj.get('name', 'Unknown')}")
+            else:
+                logger.info(f"🔍 ObjectDetector: box_info={box_info.get('box_label', '?')}, profile=None")
+                
         except Exception as e:
             logger.warning(f"⚠️ Ошибка в ObjectDetector: {e}")
     
     # ═══════════════════════════════════════════════════════════
-    # ШАГ 4: Формируем ответ
+    # ШАГ 4: Ответ
     # ═══════════════════════════════════════════════════════════
     return {
         "timestamp": datetime.now().isoformat(),
@@ -201,7 +207,6 @@ async def get_lidar_scan():
             "avg_m": parsed.get("avg_distance_m", 0)
         },
         
-        # ⭐ Статус от parse_scan_data (проверенная логика)
         "object_status": object_status,
         "status_text": status_text,
         "object_detected": object_detected,
@@ -213,9 +218,8 @@ async def get_lidar_scan():
         "floor_level_mm": floor_level_mm,
         "spread_mm": parsed.get("spread_mm", 0),
         
-        # ⭐ box_info от ObjectDetector
         "box_info": box_info,
-        "profile": profile.to_dict() if profile else None,
+        "profile": profile_dict,
         "profile_confidence": profile_confidence,
         "reason": empty_reason
     }
@@ -244,19 +248,14 @@ async def measure_and_save(
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
     
-    # Парсим данные
     distances_mm = lidar_client.parse_raw_data(scan_data)
     
     if not distances_mm:
         raise HTTPException(status_code=400, detail="Нет данных в скане")
     
-    # Фильтруем угол
     angle_filtered = lidar_client.filter_to_70_degrees(distances_mm)
-    
-    # Фильтруем по расстоянию
     valid_distances = lidar_client.filter_valid_distances(angle_filtered)
     
-    # ⭐ Используем ObjectDetector для анализа
     detection_result = ObjectDetector.process_scan(valid_distances)
     
     is_empty = detection_result.get("is_empty", True)
@@ -265,7 +264,6 @@ async def measure_and_save(
     object_height_mm = detection_result.get("object_height_mm", 0)
     box_info = detection_result.get("box_info", {})
     
-    # Расчёт объёма (только если не пусто)
     if not is_empty and valid_distances:
         floor_level = detection_result.get("floor_level_mm", max(valid_distances))
         roadLevel = floor_level / 1000
@@ -282,7 +280,6 @@ async def measure_and_save(
         
         if validHeights:
             avgHeight = sum(validHeights) / len(validHeights)
-            # Используем высоту объекта из детектора если она больше
             if object_height_mm / 1000 > avgHeight:
                 avgHeight = object_height_mm / 1000
             
@@ -480,19 +477,14 @@ async def debug_points():
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
     
-    # Парсим
     distances_mm = lidar_client.parse_raw_data(scan_data)
     
     if not distances_mm:
         return {"error": "Нет данных"}
     
-    # Фильтруем угол
     angle_filtered = lidar_client.filter_to_70_degrees(distances_mm)
-    
-    # Фильтруем по расстоянию
     valid_distances = lidar_client.filter_valid_distances(angle_filtered)
     
-    # Используем ObjectDetector для анализа
     detection_result = ObjectDetector.process_scan(valid_distances)
     
     return {
@@ -506,4 +498,163 @@ async def debug_points():
         "box_info": detection_result.get("box_info", {}),
         "reason": detection_result.get("reason", ""),
         "sample_distances": valid_distances[:20]
+    }
+
+
+@router.get("/debug-bounds")
+async def debug_object_bounds():
+    """
+    Диагностика границ объекта по профилю
+    """
+    if not lidar_client.is_connected:
+        if not lidar_client.connect():
+            raise HTTPException(status_code=503, detail="Лидар не подключен")
+    
+    scan_data = lidar_client.get_scan_data()
+    if not scan_data:
+        raise HTTPException(status_code=500, detail="Не удалось получить данные")
+    
+    distances_mm = lidar_client.parse_raw_data(scan_data)
+    
+    if not distances_mm:
+        return {"error": "Нет данных"}
+    
+    angle_filtered = lidar_client.filter_to_70_degrees(distances_mm)
+    valid_distances = lidar_client.filter_valid_distances(angle_filtered)
+    
+    detection_result = ObjectDetector.process_scan(valid_distances)
+    
+    floor_level = detection_result.get("floor_level_mm", 0)
+    profile = detection_result.get("profile")
+    points = detection_result.get("points", [])
+    
+    if profile:
+        bounds = profile.get_bounds(points, floor_level)
+        filtered = profile.filter_points_inside(points, floor_level)
+        bounds["points"]["inside"] = len(filtered)
+        
+        return {
+            "profile": profile.name,
+            "profile_confidence": detection_result.get("profile_confidence", 0),
+            "bounds": bounds,
+            "points_count": len(points),
+            "points_inside": len(filtered),
+            "points_sample": points[:20]
+        }
+    else:
+        return {
+            "error": "Профиль не найден",
+            "points_count": len(points)
+        }
+
+
+@router.get("/debug/raw-data")
+async def debug_raw_data():
+    """
+    Получить СЫРЫЕ данные с лидара без фильтрации
+    """
+    if not lidar_client.is_connected:
+        if not lidar_client.connect():
+            raise HTTPException(status_code=503, detail="Лидар не подключен")
+
+    scan_data = lidar_client.get_scan_data()
+    if not scan_data:
+        raise HTTPException(status_code=500, detail="Не удалось получить данные")
+
+    # Парсим сырые данные
+    raw_distances = lidar_client.parse_raw_data(scan_data)
+
+    # Применяем фильтр угла
+    angle_filtered = lidar_client.filter_angle(raw_distances, 70)
+
+    # Фильтруем шум
+    noise_filtered = [d for d in angle_filtered if 1000 <= d <= 3000]
+
+    # Ищем кластер объекта
+    object_points = lidar_client._find_object_cluster(noise_filtered)
+
+    return {
+        "raw": {
+            "total": len(raw_distances),
+            "sample": raw_distances[:50],
+            "min": min(raw_distances) if raw_distances else 0,
+            "max": max(raw_distances) if raw_distances else 0,
+            "histogram": dict(sorted(
+                {int(d/50)*50: len([x for x in raw_distances if int(x/50)*50 == int(d/50)*50])
+                    for d in raw_distances[:200]}.items()
+            ))
+        },
+        "after_angle_filter": {
+            "total": len(angle_filtered),
+            "sample": angle_filtered[:30]
+        },
+        "after_noise_filter": {
+            "total": len(noise_filtered),
+            "sample": noise_filtered[:30]
+        },
+        "object": {
+            "detected": len(object_points) >= 15,
+            "points": len(object_points),
+            "sample": object_points[:30],
+            "min": min(object_points) if object_points else 0,
+            "max": max(object_points) if object_points else 0,
+            "floor_level": lidar_client.FLOOR_LEVEL,
+            "height_mm": lidar_client.FLOOR_LEVEL - min(object_points) if object_points else 0
+        },
+        "settings": {
+            "MIN_VALID_DISTANCE": lidar_client.MIN_VALID_DISTANCE,
+            "FLOOR_LEVEL": lidar_client.FLOOR_LEVEL,
+            "FLOOR_THRESHOLD": lidar_client.FLOOR_THRESHOLD,
+            "MIN_OBJECT_POINTS": lidar_client.MIN_OBJECT_POINTS
+        }
+    }
+    
+
+@router.get("/debug/frontend-data")
+async def get_frontend_format():
+    """
+    Получить данные в формате, который ожидает фронтенд
+    """
+    if not lidar_client.is_connected:
+        if not lidar_client.connect():
+            raise HTTPException(status_code=503, detail="Лидар не подключен")
+
+    scan_data = lidar_client.get_scan_data()
+    if not scan_data:
+        raise HTTPException(status_code=500, detail="Не удалось получить данные")
+
+    # Парсим как обычно
+    parsed = lidar_client.parse_scan_data(
+        scan_data,
+        filter_angle=True,
+        separate_object=True,
+        mode="auto"
+    )
+
+    # Формируем данные для диаграммы
+    distances = parsed.get("distances_mm", [])
+
+    # Создаем точки для графика (x - индекс, y - расстояние)
+    chart_data = []
+    for i, d in enumerate(distances):
+        chart_data.append({
+            "index": i,
+            "distance": d,
+            "distance_m": round(d / 1000, 2)
+        })
+
+    return {
+        "chart_data": chart_data,
+        "points_count": len(distances),
+        "floor_level": parsed.get("floor_level_mm", 0),
+        "object_height": parsed.get("object_height_mm", 0),
+        "is_empty": parsed.get("is_empty", True),
+        "object_type": parsed.get("object_type", "unknown"),
+        "raw_distances": distances[:100],  # первые 100 точек для отладки
+        "statistics": {
+            "min": min(distances) if distances else 0,
+            "max": max(distances) if distances else 0,
+            "avg": sum(distances) / len(distances) if distances else 0,
+            "count": len(distances)
+        }
     }

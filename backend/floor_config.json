@@ -1,0 +1,14 @@
+{
+  "floor_level_mm": 1526,
+  "measurements": [
+    1525,
+    1514,
+    1511,
+    1561,
+    1519
+  ],
+  "timestamp": "2026-06-24T11:00:17.970749",
+  "min_mm": 1511,
+  "max_mm": 1561,
+  "stable": true
+}
