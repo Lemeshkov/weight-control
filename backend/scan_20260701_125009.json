@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-07-01T12:50:09.597506",
+  "angle": null,
+  "points_count": 2,
+  "object_points": 2,
+  "object_height": 1402,
+  "bins": [
+    [
+      1350,
+      2
+    ]
+  ],
+  "sample": [
+    1390,
+    1393
+  ]
+}

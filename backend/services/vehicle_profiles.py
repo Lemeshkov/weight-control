@@ -193,10 +193,10 @@ class VehicleProfiles:
             width_m=0.35,    # 35 см
             height_m=0.37,   # 37 см
             empty_height_mm=50,
-            points_range=(10, 22),
-            spread_range=(100, 400),
+            points_range=(10, 35),
+            spread_range=(50, 400),
             box_type="medium",
-            min_points_for_filled=12,   #  8+ точек = заполнено
+            min_points_for_filled=10,   #  8+ точек = заполнено
             max_points_for_empty=4      #  4- = пусто (3 точки = пусто)
         )
 
@@ -210,11 +210,11 @@ class VehicleProfiles:
             width_m=0.40,    # 40 см
             height_m=0.60,   # 60 см
             empty_height_mm=50,
-            points_range=(19, 25),
-            spread_range=(200, 600),
+            points_range=(15, 45),
+            spread_range=(100, 600),
             box_type="large",
-            min_points_for_filled=18,   #  18+ точек = заполнено
-            max_points_for_empty=5      #  5- = пусто (4 точки = пусто)
+            min_points_for_filled=15,   #  18+ точек = заполнено
+            max_points_for_empty=6      #  5- = пусто (4 точки = пусто)
         )
 
         # ═══════════════════════════════════════════════════════════

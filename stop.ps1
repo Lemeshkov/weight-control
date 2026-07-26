@@ -1,11 +1,18 @@
-# stop.ps1
-Write-Host "🛑 Остановка Weight Control System" -ForegroundColor Cyan
+﻿$ErrorActionPreference = "Continue"
+$projectRoot = $PSScriptRoot
+$pidFile = Join-Path $projectRoot ".weight-control-processes.json"
 
-# Остановка Python процессов
-Get-Process -Name "python" -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process -Name "node" -ErrorAction SilentlyContinue | Stop-Process -Force
+if (Test-Path $pidFile) {
+    $processes = Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json
+    foreach ($processId in @($processes.backend, $processes.frontend)) {
+        if ($processId) {
+            Stop-Process -Id $processId -ErrorAction SilentlyContinue
+        }
+    }
+    Remove-Item -LiteralPath $pidFile -ErrorAction SilentlyContinue
+} else {
+    Write-Warning "PID-файл не найден; посторонние Python/Node процессы не затронуты."
+}
 
-# Остановка Docker контейнера
-docker-compose down
-
-Write-Host "✅ Система остановлена" -ForegroundColor Green
+docker compose -f (Join-Path $projectRoot "docker-compose.yml") down
+Write-Host "Weight Control System остановлена" -ForegroundColor Green

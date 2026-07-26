@@ -1,4 +1,4 @@
-# backend/test_hex.py
+# backend/python
 """
 Тест преобразования HEX в INT
 """

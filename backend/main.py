@@ -1,4 +1,4 @@
-﻿# # backend/main.py
+# # backend/main.py
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -73,9 +73,6 @@ class EveryNSecondsFilter(logging.Filter):
 for name in ["services.lidar_client", "services.object_detector", "services.vehicle_profiles"]:
     logging.getLogger(name).addFilter(EveryNSecondsFilter(interval=7))
 #----------------------------------------------------логи лидара ------------------------
-
-# Создание таблиц при запуске (для разработки)
-models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Weight Control System - Уголь-Контроль")
 
@@ -375,15 +372,14 @@ async def startup_event():
         logger.warning("⚠️ Failed to connect to UniServer")
     
     # ✅ ЗАПУСКАЕМ МОНИТОРИНГ БЕЗ БЛОКИРОВКИ
-    asyncio.create_task(scale_monitor.start())
+    await scale_monitor.start()
     logger.info("🔄 Scale monitor started (checking every 2 seconds)")
-    logger.info("ℹ️ Scale monitor is DISABLED for testing")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     # Останавливаем мониторинг весов
-    scale_monitor.stop()
+    await scale_monitor.stop()
     logger.info("⏹ Scale monitor stopped")
     
     # if lidar_client:

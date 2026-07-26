@@ -14,6 +14,14 @@ class Settings:
     UNISERVER_PASSWORD: str = os.getenv("UNISERVER_PASSWORD", "user")
     UNISERVER_TIMEOUT: int = int(os.getenv("UNISERVER_TIMEOUT", "30"))
     
+    # Camera
+    CAMERA_TYPE: str = os.getenv("CAMERA_TYPE", "ip")
+    CAMERA_IP: str = os.getenv("CAMERA_IP", "192.168.1.64")
+    CAMERA_PORT: int = int(os.getenv("CAMERA_PORT", "80"))
+    CAMERA_USERNAME: str = os.getenv("CAMERA_USERNAME", "admin")
+    CAMERA_PASSWORD: str = os.getenv("CAMERA_PASSWORD", "Hikvision")
+    CAMERA_RTSP_PATH: str = os.getenv("CAMERA_RTSP_PATH", "/Streaming/Channels/101")
+
     # File storage
     PHOTO_STORAGE_PATH: str = os.getenv("PHOTO_STORAGE_PATH", "/data/photos")
     ARCHIVE_PATH: str = os.getenv("ARCHIVE_PATH", "/data/archive")

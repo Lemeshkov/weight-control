@@ -41,6 +41,9 @@ backend/test_camera_frame.jpg
 backend/test_*.jpg
 backend/*.log
 
+# Диагностическая папка
+sick_diagnostic/
+
 # FastAPI
 backend/.mypy_cache/
 backend/.pytest_cache/

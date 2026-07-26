@@ -1,7 +1,7 @@
-﻿
+
 
 // frontend/src/App.tsx
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import axios from "axios";
 import { WeighingHistory } from "./components/Weighing/WeighingHistory";
 import LidarViewer from "./components/Weighing/LidarViewer";

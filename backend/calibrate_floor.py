@@ -15,7 +15,7 @@ from collections import Counter
 # ═══════════════════════════════════════════════════════════
 LIDAR_HOST = "192.168.1.101"
 LIDAR_PORT = 2111
-CONFIG_FILE = "floor_config.json"  # Файл для сохранения калибровки
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "floor_config.json")
 
 
 def connect_lidar(host=LIDAR_HOST, port=LIDAR_PORT):
@@ -61,9 +61,14 @@ def parse_distances(raw_data):
     distances = []
     
     for i, part in enumerate(parts):
-        if part == "DIST1" and i + 1 < len(parts):
-            j = i + 1
-            while j < len(parts) and parts[j] not in ["RSSI1", "RSSI2", "DIST2", "DEVICE"]:
+        if part == "DIST1" and i + 5 < len(parts):
+            try:
+                points_count = int(parts[i + 5], 16)
+            except ValueError:
+                return []
+            data_start = i + 6
+            data_end = min(data_start + points_count, len(parts))
+            for j in range(data_start, data_end):
                 try:
                     hex_val = parts[j].strip()
                     if hex_val:
@@ -74,9 +79,8 @@ def parse_distances(raw_data):
                             distances.append(value)
                 except ValueError:
                     pass
-                j += 1
             break
-    
+
     return distances
 
 

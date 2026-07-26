@@ -154,11 +154,16 @@ class ScaleMonitor:
         finally:
             db.close()
     
-    def stop(self):
-        """Остановка мониторинга"""
+    async def stop(self):
+        """Остановка мониторинга с ожиданием завершения фоновой задачи."""
         self.running = False
         if self.task:
             self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task = None
         logger.info("⏹ Мониторинг весов остановлен")
 
 

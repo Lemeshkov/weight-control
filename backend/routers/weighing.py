@@ -14,6 +14,38 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/weighing", tags=["weighing"])
 
+
+def commit_or_conflict(db: Session, message: str) -> None:
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(message)
+        raise HTTPException(status_code=409, detail=message)
+
+
+BRUTTO_TYPES = {"БРУТТО", "BRUTTO", "GROSS"}
+TARE_TYPES = {"ТАРА", "TARE"}
+
+
+def validate_weighing_payload(data: dict, allowed_types: set[str]) -> tuple[str, float, str]:
+    if not data.get("is_stable", False):
+        raise HTTPException(status_code=409, detail="Весы нестабильны")
+    weight_type = str(data.get("weight_type") or "").strip().upper()
+    if weight_type not in allowed_types:
+        expected = "БРУТТО" if allowed_types == BRUTTO_TYPES else "ТАРА"
+        raise HTTPException(status_code=409, detail=f"Ожидается {expected}, получено '{weight_type or 'пусто'}'")
+    try:
+        weight = float(data.get("weight", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Некорректное значение веса")
+    if weight <= 0:
+        raise HTTPException(status_code=422, detail="Вес должен быть положительным")
+    plate_number = str(data.get("plate_number") or "").strip().upper().replace(" ", "")
+    if not plate_number:
+        raise HTTPException(status_code=422, detail="Номер автомобиля отсутствует")
+    return weight_type, weight, plate_number
+
 # Pydantic модели для ответов
 class CurrentWeightResponse(BaseModel):
     plate_number: str
@@ -65,34 +97,12 @@ async def start_trip(db: Session = Depends(get_db)):
     
     # Проверяем стабильность
     if not data.get('is_stable', False):
-        logger.warning(f"⚠️ Весы нестабильны, но продолжаем...")
+        raise HTTPException(status_code=409, detail="Весы нестабильны")
     
     # Проверяем тип взвешивания
-    weight_type = data.get('weight_type', '')
-    weight = data.get('weight', 0)
-    plate_number = data.get('plate_number', '')
-    doc_id = data.get('doc_id', '')  # ← Уникальный код из UniServer
-    
-    logger.info(f"🔍 Проверка: тип={weight_type}, вес={weight}кг, номер={plate_number}, doc_id={doc_id}")
-    
-    # Если тип не "БРУТТО" и вес > 0 - возможно это брутто с другим названием
-    if weight_type not in ["БРУТТО", "BRUTTO", "GROSS"]:
-        if weight > 0 and plate_number:
-            logger.warning(f"⚠️ Тип '{weight_type}' интерпретируется как БРУТТО (вес={weight}кг)")
-        else:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Expected BRUTTO weighing, got '{weight_type}' (weight={weight}кг)"
-            )
-    
-    # Проверяем вес
-    if weight <= 0:
-        raise HTTPException(status_code=400, detail=f"Zero or negative weight: {weight}кг")
-    
-    # Проверяем номер
-    if not plate_number or plate_number.strip() == "":
-        raise HTTPException(status_code=400, detail="Plate number is empty")
-    
+    weight_type, weight, plate_number = validate_weighing_payload(data, BRUTTO_TYPES)
+    doc_id = data.get('doc_id', '')
+
     # ✅ Проверяем, есть ли уже рейс с таким uniserver_code (предотвращение дубликатов)
     if doc_id:
         existing_by_code = db.query(models.Trip).filter(
@@ -112,7 +122,7 @@ async def start_trip(db: Session = Depends(get_db)):
                 }
             else:
                 # Если рейс завершен - создаем новый с другим кодом
-                logger.info(f"ℹ️ Рейс с кодом {doc_id} завершен, создаем новый")
+                raise HTTPException(status_code=409, detail=f"Код взвешивания {doc_id} уже использован рейсом {existing_by_code.id}")
     
     # Получаем или создаем автомобиль
     vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
@@ -155,7 +165,7 @@ async def start_trip(db: Session = Depends(get_db)):
     )
     db.add(uniserver_event)
     
-    db.commit()
+    commit_or_conflict(db, "Не удалось создать рейс: конфликт данных")
     db.refresh(trip)
     
     logger.info(f"✅ Создан рейс {trip.id} для {plate_number}, вес {weight}кг, код: {doc_id}")
@@ -244,25 +254,36 @@ async def end_trip(trip_id: int, db: Session = Depends(get_db)):
     if not data:
         raise HTTPException(status_code=503, detail="Cannot connect to UniServer")
     
+    _, weight, plate_number = validate_weighing_payload(data, TARE_TYPES)
+
     trip = db.query(models.Trip).filter(models.Trip.id == trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
     
     # Проверяем, что рейс не завершен
-    if trip.status == models.TripStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="Trip already completed")
+    if trip.status != models.TripStatus.ENTRY:
+        raise HTTPException(status_code=409, detail="Рейс не находится в статусе въезда")
+    trip_plate = str(trip.vehicle.plate_number or "").strip().upper().replace(" ", "") if trip.vehicle else ""
+    if trip_plate != plate_number:
+        raise HTTPException(status_code=409, detail=f"На весах автомобиль {plate_number}, рейс принадлежит другому автомобилю")
+    if not trip.entry_measurement:
+        raise HTTPException(status_code=409, detail="У рейса отсутствует взвешивание БРУТТО")
+    if trip.exit_measurement:
+        raise HTTPException(status_code=409, detail="Взвешивание ТАРА уже существует")
+    if weight >= trip.entry_measurement.weight_brutto:
+        raise HTTPException(status_code=409, detail="ТАРА должна быть меньше БРУТТО")
     
     exit_measurement = models.ExitMeasurement(
         trip_id=trip.id,
-        weight_tare=data['weight']
+        weight_tare=weight
     )
     db.add(exit_measurement)
     
     trip.exit_time = datetime.now()
     trip.status = models.TripStatus.COMPLETED
-    db.commit()
+    commit_or_conflict(db, "Не удалось завершить рейс: конфликт данных")
     
-    net_weight = trip.entry_measurement.weight_brutto - data['weight']
+    net_weight = trip.entry_measurement.weight_brutto - weight
     
     return {"net_weight": net_weight, "message": "Trip completed"}
 
@@ -674,6 +695,7 @@ async def sync_journal_history(
             uniserver_code = parsed.get("code")  # ✅ Уникальный код из UniServer
             
             if not plate_number or not uniserver_code:
+                db.commit()
                 skipped += 1
                 continue
             
@@ -750,14 +772,14 @@ async def sync_journal_history(
                 )
                 db.add(exit_meas)
             
+            db.commit()
             synced += 1
             logger.info(f"✅ Создан рейс {trip.id} для {plate_number} (code: {uniserver_code})")
             
         except Exception as e:
+            db.rollback()
             logger.error(f"❌ Ошибка синхронизации: {e}")
             skipped += 1
-    
-    db.commit()
     
     return {
         "status": "success",

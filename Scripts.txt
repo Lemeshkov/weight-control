@@ -44,3 +44,13 @@ self.add_profile(VehicleProfile(
 
 
 curl http://localhost:8000/api/health
+
+настройка угла 
+Угол	Команда
+20° (-10°…+10°)	"sWN LMPoutputRange 1 5000 FFFF0B90 0B90"
+30° (-15°…+15°)	"sWN LMPoutputRange 1 5000 FFFF1148 1148"
+40° (-20°…+20°)	"sWN LMPoutputRange 1 5000 FFFF16A0 16A0"
+50° (-25°…+25°)	"sWN LMPoutputRange 1 5000 FFFF1BF8 1BF8"
+60° (-30°…+30°)	"sWN LMPoutputRange 1 5000 FFFF2120 2120"
+
+пароль servicelevel сервис авторизация 

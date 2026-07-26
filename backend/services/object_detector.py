@@ -6,8 +6,9 @@
 """
 import logging
 import numpy as np
+import math
 from typing import Dict, List, Any, Optional, Tuple
-from collections import Counter
+from collections import Counter, deque
 from services.vehicle_profiles import vehicle_profiles
 
 logger = logging.getLogger(__name__)
@@ -31,10 +32,97 @@ class ObjectDetector:
     EMPTY_POINTS_THRESHOLD = 10   # Если <= 10 точек - пусто
     FILLED_POINTS_THRESHOLD = 17  # Если >= 17 точек - заполнено
 
+    # ═══════════════════════════════════════════════════════════
+    # ⭐ БУФЕРЫ ДЛЯ СТАБИЛИЗАЦИИ
+    # ═══════════════════════════════════════════════════════════
+    _width_history = deque(maxlen=5)
+    _box_type_history = deque(maxlen=5)
+    _height_history = deque(maxlen=5)
+
+    @classmethod
+    def _stabilize_width(cls, width_mm: float) -> Tuple[float, bool]:
+        """
+        Стабилизирует измерение ширины через медианный фильтр.
+
+        Returns:
+            (стабилизированная_ширина, была_ли_коррекция)
+        """
+        # Добавляем текущее измерение
+        cls._width_history.append(width_mm)
+
+        # Если истории мало - возвращаем текущее значение
+        if len(cls._width_history) < 3:
+            return width_mm, False
+
+        # Медианная фильтрация
+        sorted_history = sorted(cls._width_history)
+        median = sorted_history[len(sorted_history) // 2]
+
+        # Если текущее измерение сильно отличается от медианы (> 30 мм)
+        if abs(width_mm - median) > 30:
+            logger.info(f"📊 Стабилизация ширины: {width_mm:.1f} → {median:.1f} мм")
+            return median, True
+
+        return width_mm, False
+
+    @classmethod
+    def _stabilize_height(cls, height_mm: float) -> Tuple[float, bool]:
+        """
+        Стабилизирует измерение высоты через медианный фильтр.
+        """
+        cls._height_history.append(height_mm)
+
+        if len(cls._height_history) < 3:
+            return height_mm, False
+
+        sorted_history = sorted(cls._height_history)
+        median = sorted_history[len(sorted_history) // 2]
+
+        if abs(height_mm - median) > 20:
+            logger.info(f"📊 Стабилизация высоты: {height_mm:.1f} → {median:.1f} мм")
+            return median, True
+
+        return height_mm, False
+
+    @classmethod
+    def _stabilize_box_type(cls, box_type: str, confidence: float) -> Tuple[str, float]:
+        """
+        Стабилизирует определение типа коробки.
+        """
+        cls._box_type_history.append({
+            "type": box_type,
+            "confidence": confidence
+        })
+
+        if len(cls._box_type_history) < 3:
+            return box_type, confidence
+
+        # Считаем частоту каждого типа
+        type_counts = {}
+        for item in cls._box_type_history:
+            type_counts[item["type"]] = type_counts.get(item["type"], 0) + 1
+
+        # Выбираем наиболее частый тип
+        most_common = max(type_counts.items(), key=lambda x: x[1])
+
+        # Если самый частый тип встречается > 50% времени
+        if most_common[1] / len(cls._box_type_history) > 0.5:
+            avg_confidence = sum(item["confidence"] for item in cls._box_type_history
+                                if item["type"] == most_common[0]) / most_common[1]
+            return most_common[0], min(95, avg_confidence + 10)
+
+        return box_type, confidence
+
     @classmethod
     def process_scan(cls, distances_mm: List[int], params: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Основной метод обработки скана
+
+        Args:
+            distances_mm: массив расстояний в мм
+            params: параметры обработки
+                - mode: "box" | "truck" | "auto" (по умолчанию "auto")
+                - floor_level: уровень пола (если известен)
         """
         if not distances_mm:
             return cls._empty_result("Нет данных", "no_data")
@@ -73,37 +161,229 @@ class ObjectDetector:
         spread = max_dist - min_dist
         avg_dist = sum(object_points) / len(object_points)
 
-        logger.info(f" Объект: {points_count} точек, высота={object_height:.1f}мм, разброс={spread:.1f}мм")
+        #  СТАБИЛИЗАЦИЯ ВЫСОТЫ
+        stabilized_height, height_corrected = cls._stabilize_height(object_height)
+        if height_corrected:
+            object_height = stabilized_height
+
+        logger.info(f"📊 Объект: {points_count} точек, высота={object_height:.1f}мм, разброс={spread:.1f}мм")
+
+        # ═══════════════════════════════════════════════════════════════
+        #  НОВЫЙ ШАГ: ФИЛЬТРАЦИЯ ОБЪЕКТА (ДО ОПРЕДЕЛЕНИЯ РЕЖИМА!)
+        # ═══════════════════════════════════════════════════════════════
+        if points_count > 10:
+            # Отбрасываем точки дальше 300 мм от минимума (пол и шум)
+            threshold = min_dist + 300
+            filtered_object_points = [d for d in object_points if d <= threshold]
+
+            if len(filtered_object_points) >= cls.MIN_POINTS_FOR_OBJECT:
+                logger.info(f"📦 Фильтрация объекта: {len(filtered_object_points)} точек из {points_count}")
+                logger.info(f"   Минимальное расстояние: {min_dist} мм, порог: {threshold} мм")
+
+                object_points = filtered_object_points
+                points_count = len(object_points)
+                min_dist = min(object_points)
+                max_dist = max(object_points)
+                object_height = floor_level - min_dist
+                spread = max_dist - min_dist
+                avg_dist = sum(object_points) / len(object_points)
+
+                logger.info(f"   После фильтрации: {points_count} точек, высота={object_height:.1f}мм")
 
         # ═══════════════════════════════════════════════════════════
-        # ШАГ 4.5: ИЗМЕРЕНИЕ ШИРИНЫ КОРОБКИ
+        # ⭐ ШАГ 4.5: ОПРЕДЕЛЕНИЕ РЕЖИМА РАБОТЫ
         # ═══════════════════════════════════════════════════════════
-        width_info = cls._measure_box_width(object_points, floor_level)
-        width_mm = width_info["width_mm"]
-        
-        logger.info(f"📏 Ширина коробки: {width_mm:.1f}мм (разброс: {spread:.1f}мм)")
+        mode = params.get("mode", "auto")
+
+        if mode == "box":
+            logger.info("🟢 Режим: КОРОБКА (принудительный)")
+            return cls._process_box_mode(object_points, floor_level, valid_points)
+        elif mode == "truck":
+            logger.info("🔵 Режим: ГРУЗОВИК (принудительный)")
+            return cls._process_truck_mode(object_points, floor_level, valid_points)
+        else:
+            # Автоопределение
+            if points_count < 50:
+                logger.info("🟢 Автоопределение: режим КОРОБОК (мало точек)")
+                return cls._process_box_mode(object_points, floor_level, valid_points)
+            else:
+                logger.info("🔵 Автоопределение: режим ГРУЗОВИК (много точек)")
+                return cls._process_truck_mode(object_points, floor_level, valid_points)
+
+    # ═══════════════════════════════════════════════════════════
+    # ⭐ РЕЖИМ КОРОБОК - ФИКСИРОВАННАЯ ШИРИНА
+    # ═══════════════════════════════════════════════════════════
+
+    @classmethod
+    def _process_box_mode(cls, object_points: List[int], floor_level: int, all_points: List[int] = None) -> Dict[str, Any]:
+        """
+        Обработка скана для КОРОБОК.
+        Используем ФИКСИРОВАННУЮ ширину из профиля.
+        Отбрасываем точки вне коробки (пол, стены).
+        """
+        # ═══════════════════════════════════════════════════════════
+        # ⭐ 1. ОТБРАСЫВАЕМ ТОЧКИ ВНЕ КОРОБКИ (ТОЛЬКО ОБЪЕКТ!)
+        # ═══════════════════════════════════════════════════════════
+
+        # Находим минимальное расстояние (самая близкая точка к лидару)
+        min_dist = min(object_points)
+
+        # Объект - это точки в пределах 300 мм от минимального расстояния
+        # (это захватывает всю коробку/кирпич, но не пол)
+        threshold = min_dist + 300
+        filtered_points = [d for d in object_points if d <= threshold]
+
+        logger.info(f"📦 Отфильтровано точек: {len(filtered_points)} из {len(object_points)}")
+        logger.info(f"   Минимальное расстояние: {min_dist} мм")
+        logger.info(f"   Порог отсечения: {threshold} мм")
+
+        if len(filtered_points) < cls.MIN_POINTS_FOR_OBJECT:
+            logger.warning(f"⚠️ После фильтрации осталось {len(filtered_points)} точек (меньше минимума)")
+            return cls._empty_result("Мало точек объекта после фильтрации", "no_object", floor_level=floor_level)
+
+        # Используем отфильтрованные точки
+        object_points = filtered_points
+        points_count = len(object_points)
+        min_dist = min(object_points)
+        max_dist = max(object_points)
+        object_height = floor_level - min_dist
+        spread = max_dist - min_dist
+        avg_dist = sum(object_points) / len(object_points)
 
         # ═══════════════════════════════════════════════════════════
-        # ШАГ 5: ПОИСК ПРОФИЛЯ В БАЗЕ
+        # 2. ОПРЕДЕЛЯЕМ ТИП КОРОБКИ ПО ВЫСОТЕ
         # ═══════════════════════════════════════════════════════════
-        logger.info(f"[PROFILE] ВЫЗЫВАЕМ _find_matching_profile_enhanced для точек={len(object_points)}")
+        box_type, confidence, width_mm = cls._determine_box_type_by_height(object_height, points_count)
 
-        match_result = cls._find_matching_profile_enhanced(
-            object_points, 
-            floor_level, 
-            width_mm
-        )
-        profile = match_result.get("profile")
-        profile_confidence = match_result.get("confidence", 0)
+        # ═══════════════════════════════════════════════════════════
+        # 3. СТАБИЛИЗАЦИЯ ТИПА
+        # ═══════════════════════════════════════════════════════════
+        stable_type, stable_confidence = cls._stabilize_box_type(box_type, confidence)
+        if stable_type != box_type:
+            logger.info(f"📊 Стабилизация типа: {box_type} → {stable_type}")
+            box_type = stable_type
+            confidence = stable_confidence
+            if box_type == "medium":
+                width_mm = 350
+            else:
+                width_mm = 400
 
-        logger.info(f"[PROFILE] РЕЗУЛЬТАТ: profile={profile.name if profile else 'None'}, confidence={profile_confidence}") 
-        
         # ═══════════════════════════════════════════════════════════
-        # ШАГ 5.5: ФИЛЬТРАЦИЯ ТОЧЕК ПО ПРОФИЛЮ
+        # 4. НАХОДИМ ПРОФИЛЬ
         # ═══════════════════════════════════════════════════════════
-        if profile and profile_confidence > 30:
+        profile = None
+        for name, p in vehicle_profiles.profiles.items():
+            if p.vehicle_type == "box" and p.box_type == box_type:
+                profile = p
+                logger.info(f"🔍 Найден профиль: {name} (уверенность: {confidence}%)")
+                break
+
+        # Fallback - если профиль не найден, используем M
+        if not profile:
+            profile = vehicle_profiles.get_profile("Коробка M (35x65x37)")
+            width_mm = 350
+            confidence = 50
+            logger.warning(f"⚠️ Профиль не найден, используем M по умолчанию")
+
+        # ═══════════════════════════════════════════════════════════
+        # 5. ОПРЕДЕЛЕНИЕ СТАТУСА
+        # ═══════════════════════════════════════════════════════════
+        status_result = cls._determine_status(points_count, object_height, profile, spread)
+
+        # ═══════════════════════════════════════════════════════════
+        # 6. ИНФОРМАЦИЯ О КОРОБКЕ
+        # ═══════════════════════════════════════════════════════════
+        box_info = vehicle_profiles.get_box_info_from_profile(profile)
+        box_info["profile_confidence"] = confidence
+
+        if profile and profile.vehicle_type == "box" and box_info.get("detected"):
+            size_str = f"{box_info['size_cm']['width']}×{box_info['size_cm']['depth']}×{box_info['size_cm']['height']}"
+            if status_result["is_empty"]:
+                status_text = f"📦 Коробка {box_info['box_label']} ({size_str}см) ПУСТАЯ"
+            else:
+                status_text = f"📦 Коробка {box_info['box_label']} ({size_str}см) ЗАПОЛНЕНА"
+        else:
+            if status_result["is_empty"]:
+                status_text = "📭 Объект ПУСТОЙ"
+            else:
+                status_text = "📦 Объект ЗАПОЛНЕН"
+
+        logger.info(f"📦 РЕЖИМ КОРОБОК: {box_type} (ширина: {width_mm}мм, уверенность: {confidence}%)")
+        logger.info(f"   Точек после фильтрации: {points_count}")
+
+        return {
+            "mode": "box",
+            "object_detected": True,
+            "is_empty": status_result["is_empty"],
+            "confidence": status_result["confidence"],
+            "object_status": status_result["status"],
+            "status_text": status_text,
+            "object_type": "box",
+            "profile": profile,
+            "profile_confidence": confidence,
+            "box_info": box_info,
+            "points_count": points_count,
+            "object_height_mm": object_height,
+            "floor_level_mm": floor_level,
+            "spread_mm": spread,
+            "width_mm": width_mm,  # ← ФИКСИРОВАННАЯ
+            "avg_distance_mm": avg_dist,
+            "reason": status_result["reason"],
+            "points": object_points,
+            "all_points": all_points or object_points,
+            "box_type_detected": box_type,
+            "box_confidence": confidence,
+            "height_stabilized": False,
+            "width_stabilized": False,
+            "points_filtered": len(filtered_points)  # ← ДОБАВЛЯЕМ
+        }
+
+    # ═══════════════════════════════════════════════════════════
+    # ⭐ РЕЖИМ ГРУЗОВИКОВ - ИЗМЕРЯЕМ РЕАЛЬНЫЕ РАЗМЕРЫ
+    # ═══════════════════════════════════════════════════════════
+
+    @classmethod
+    def _process_truck_mode(cls, object_points: List[int], floor_level: int, all_points: List[int] = None) -> Dict[str, Any]:
+        """
+        Обработка скана для ГРУЗОВИКОВ.
+
+        Особенности:
+        - Кузова имеют РАЗНЫЕ размеры
+        - Измеряем РЕАЛЬНУЮ ширину и длину
+        - Используем АЛГОРИТМ ПО КРАЯМ
+        - Разница 500-1000 мм - легко определяется
+        """
+        points_count = len(object_points)
+        min_dist = min(object_points)
+        max_dist = max(object_points)
+        object_height = floor_level - min_dist
+        spread = max_dist - min_dist
+        avg_dist = sum(object_points) / len(object_points)
+
+        # ═══════════════════════════════════════════════════════════
+        # ⭐ ИЗМЕРЯЕМ РЕАЛЬНУЮ ШИРИНУ (по краям)
+        # ═══════════════════════════════════════════════════════════
+        width_info = cls._measure_truck_width(object_points, floor_level)
+        width_mm = width_info.get("width_mm", 0)
+
+        logger.info(f"🚛 Измеренная ширина грузовика: {width_mm:.1f}мм")
+
+        # ═══════════════════════════════════════════════════════════
+        # ⭐ ИЩЕМ ПРОФИЛЬ ГРУЗОВИКА ПО РАЗМЕРАМ
+        # ═══════════════════════════════════════════════════════════
+        profile, confidence = cls._find_truck_profile_by_size(width_mm, object_height)
+
+        if not profile:
+            # Используем стандартный профиль
+            profile = vehicle_profiles.get_profile("КАМАЗ 65115")
+            confidence = 40
+            logger.warning(f"⚠️ Профиль не найден, используем КАМАЗ 65115 по умолчанию")
+
+        # ═══════════════════════════════════════════════════════════
+        # ФИЛЬТРАЦИЯ ТОЧЕК ПО ПРОФИЛЮ
+        # ═══════════════════════════════════════════════════════════
+        if profile and confidence > 30:
             filtered_points = cls._filter_points_by_profile(object_points, profile, floor_level)
-
             if filtered_points:
                 object_points = filtered_points
                 points_count = len(object_points)
@@ -112,71 +392,298 @@ class ObjectDetector:
                 object_height = floor_level - min_dist
                 spread = max_dist - min_dist
                 avg_dist = sum(object_points) / len(object_points)
-
                 logger.info(f"📦 После фильтрации: {points_count} точек")
 
         # ═══════════════════════════════════════════════════════════
-        # ШАГ 6: ОПРЕДЕЛЕНИЕ СТАТУСА
+        # ОПРЕДЕЛЕНИЕ СТАТУСА
         # ═══════════════════════════════════════════════════════════
-        status_result = cls._determine_status(
-            points_count=points_count,
-            object_height=object_height,
-            profile=profile,
-            spread=spread
-        )
+        status_result = cls._determine_status(points_count, object_height, profile, spread)
 
         # ═══════════════════════════════════════════════════════════
-        # ШАГ 7: ПОЛУЧЕНИЕ ИНФОРМАЦИИ О КОРОБКЕ
+        # ФОРМИРОВАНИЕ СТАТУСА
         # ═══════════════════════════════════════════════════════════
-        box_info = vehicle_profiles.get_box_info_from_profile(profile)
-
-        if profile:
-            box_info["profile_confidence"] = profile_confidence
-            logger.info(f"🔍 Найден профиль: {profile.name} (уверенность: {profile_confidence}%)")
-
-            if profile.vehicle_type == "box" and box_info.get("detected"):
-                size_str = f"{box_info['size_cm']['width']}×{box_info['size_cm']['depth']}×{box_info['size_cm']['height']}"
-
-                if status_result["is_empty"]:
-                    status_text = f"📦 Коробка {box_info['box_label']} ({size_str}см) ПУСТАЯ"
-                else:
-                    status_text = f"📦 Коробка {box_info['box_label']} ({size_str}см) ЗАПОЛНЕНА"
-            else:
-                if status_result["is_empty"]:
-                    status_text = f"🚛 {profile.name} - ПУСТОЙ"
-                else:
-                    status_text = f"🚛 {profile.name} - ЗАПОЛНЕН"
+        if status_result["is_empty"]:
+            status_text = f"🚛 {profile.name if profile else 'Грузовик'} - ПУСТОЙ"
         else:
-            if status_result["is_empty"]:
-                status_text = "📭 Объект ПУСТОЙ"
-            else:
-                status_text = "📦 Объект ЗАПОЛНЕН"
+            status_text = f"🚛 {profile.name if profile else 'Грузовик'} - ЗАПОЛНЕН"
 
-            logger.warning(f"⚠️ Профиль не найден для точек={points_count}, разброс={spread}")
+        # Информация о коробке (для совместимости)
+        box_info = {
+            "box_type": "truck",
+            "box_label": "🚛",
+            "box_name": profile.name if profile else "Грузовик",
+            "size_mm": {
+                "width": int(width_mm),
+                "depth": int(profile.length_m * 1000) if profile else 0,
+                "height": int(object_height)
+            },
+            "size_cm": {
+                "width": round(width_mm / 10, 1),
+                "depth": round(profile.length_m * 100, 1) if profile else 0,
+                "height": round(object_height / 10, 1)
+            },
+            "detected": True,
+            "confidence": confidence,
+            "profile_name": profile.name if profile else None,
+            "vehicle_type": "truck"
+        }
 
-        # ═══════════════════════════════════════════════════════════
-        # ШАГ 8: ФОРМИРОВАНИЕ РЕЗУЛЬТАТА
-        # ═══════════════════════════════════════════════════════════
+        logger.info(f"🚛 РЕЖИМ ГРУЗОВИК: ширина={width_mm:.1f}мм, высота={object_height:.1f}мм")
+
         return {
+            "mode": "truck",
             "object_detected": True,
             "is_empty": status_result["is_empty"],
             "confidence": status_result["confidence"],
             "object_status": status_result["status"],
             "status_text": status_text,
-            "object_type": profile.vehicle_type if profile else "unknown",
-            "profile": profile.to_dict() if profile else None,
-            "profile_confidence": profile_confidence,
+            "object_type": "truck",
+            "profile": profile,
+            "profile_confidence": confidence,
             "box_info": box_info,
             "points_count": points_count,
             "object_height_mm": object_height,
             "floor_level_mm": floor_level,
             "spread_mm": spread,
-            "width_mm": width_mm,
+            "width_mm": width_mm,  # ← ИЗМЕРЕННАЯ
             "avg_distance_mm": avg_dist,
             "reason": status_result["reason"],
             "points": object_points,
-            "all_points": valid_points,
+            "all_points": all_points or object_points,
+            "width_info": width_info,
+            "height_stabilized": False,  # Уже применено в process_scan
+            "width_stabilized": width_info.get("was_corrected", False)
         }
+
+    # ═══════════════════════════════════════════════════════════
+    # ⭐ ИЗМЕРЕНИЕ ШИРИНЫ ГРУЗОВИКА (ПО КРАЯМ)
+    # ═══════════════════════════════════════════════════════════
+
+    @classmethod
+    def _measure_truck_width(cls, distances_mm: List[int], floor_level: int) -> Dict[str, float]:
+        """
+        Измеряет ширину грузовика по КРАЯМ.
+
+        Для грузовиков это работает хорошо, потому что:
+        1. Разница между кузовами 500-1000 мм
+        2. Края четкие (борта кузова)
+        3. Точности лидара достаточно
+        """
+        if not distances_mm or len(distances_mm) < 10:
+            return {
+                "width_mm": 0,
+                "method": "no_data",
+                "was_corrected": False
+            }
+
+        # ═══════════════════════════════════════════════════════════
+        # 1. Находим точки объекта (не пол)
+        # ═══════════════════════════════════════════════════════════
+        object_points = [d for d in distances_mm if d < floor_level - 50]
+
+        if len(object_points) < 5:
+            return {
+                "width_mm": 0,
+                "method": "no_object",
+                "was_corrected": False
+            }
+
+        # ═══════════════════════════════════════════════════════════
+        # 2. Находим КРАЯ по ПЕРЕПАДАМ (градиентам)
+        # ═══════════════════════════════════════════════════════════
+
+        # Вычисляем градиенты (перепады между соседними точками)
+        gradients = []
+        for i in range(2, len(distances_mm) - 2):
+            grad = abs(distances_mm[i+2] - distances_mm[i-2]) / 4
+            if grad > 20:  # Минимальный порог для грузовиков (выше, чем для коробок)
+                gradients.append((i, grad))
+
+        if len(gradients) < 2:
+            # Не нашли два явных края - используем весь диапазон
+            left_idx = 0
+            right_idx = len(distances_mm) - 1
+            logger.warning(f"⚠️ Края грузовика не найдены, используем весь диапазон")
+        else:
+            sorted_grads = sorted(gradients, key=lambda x: x[1], reverse=True)
+            left_idx = min(sorted_grads[0][0], sorted_grads[1][0])
+            right_idx = max(sorted_grads[0][0], sorted_grads[1][0])
+
+            # Проверяем, что перепады достаточно большие (для грузовиков)
+            if sorted_grads[0][1] < 50 or sorted_grads[1][1] < 50:
+                logger.warning(f"⚠️ Перепады грузовика слишком маленькие: {sorted_grads[0][1]:.1f}, {sorted_grads[1][1]:.1f}")
+                left_idx = 0
+                right_idx = len(distances_mm) - 1
+
+        # ═══════════════════════════════════════════════════════════
+        # 3. Переводим индексы в физическую ширину
+        # ═══════════════════════════════════════════════════════════
+
+        total_points = len(distances_mm)
+        total_angle_deg = 70  # -35° до +35°
+
+        idx_spread = right_idx - left_idx
+        angle_deg = (idx_spread / total_points) * total_angle_deg if total_points > 0 else 0
+
+        # Среднее расстояние до объекта
+        avg_dist = sum(object_points) / len(object_points) if object_points else 2600
+
+        # Ширина = 2 * расстояние * tan(угол/2)
+        angle_rad = math.radians(angle_deg / 2)
+        width_mm = 2 * avg_dist * math.tan(angle_rad) if angle_deg > 0 else 0
+
+        # ═══════════════════════════════════════════════════════════
+        # 4. ⭐ ПРИМЕНЯЕМ СТАБИЛИЗАЦИЮ
+        # ═══════════════════════════════════════════════════════════
+        stabilized_width, was_corrected = cls._stabilize_width(width_mm)
+
+        # ═══════════════════════════════════════════════════════════
+        # 5. ДИАГНОСТИКА
+        # ═══════════════════════════════════════════════════════════
+        logger.info(f"🚛 ИЗМЕРЕНИЕ ШИРИНЫ ГРУЗОВИКА:")
+        logger.info(f"   Индексы: {left_idx} → {right_idx} (разброс: {idx_spread})")
+        logger.info(f"   Угол: {angle_deg:.1f}°")
+        logger.info(f"   Среднее расстояние: {avg_dist:.0f} мм")
+        logger.info(f"   Ширина: {width_mm:.1f} → стабилизировано: {stabilized_width:.1f} мм")
+
+        return {
+            "width_mm": round(stabilized_width, 1),
+            "left_edge": left_idx,
+            "right_edge": right_idx,
+            "idx_spread": idx_spread,
+            "angle_deg": round(angle_deg, 1),
+            "avg_distance": round(avg_dist, 1),
+            "raw_width": round(width_mm, 1),
+            "was_corrected": was_corrected,
+            "method": "edges",
+            "gradients_found": len(gradients)
+        }
+
+    # ═══════════════════════════════════════════════════════════
+    # ⭐ ПОИСК ПРОФИЛЯ ГРУЗОВИКА ПО РАЗМЕРАМ
+    # ═══════════════════════════════════════════════════════════
+
+    @classmethod
+    def _find_truck_profile_by_size(cls, width_mm: float, height_mm: float) -> Tuple[Optional[Any], float]:
+        """
+        Находит профиль грузовика по размерам
+        """
+        best_profile = None
+        best_score = 0
+
+        for name, profile in vehicle_profiles.profiles.items():
+            if profile.vehicle_type not in ["truck", "trailer", "wagon"]:
+                continue
+
+            expected_width = profile.width_m * 1000
+            expected_height = profile.height_m * 1000
+
+            # Оценка по ширине (вес 0.7)
+            if expected_width > 0:
+                width_diff = abs(width_mm - expected_width) / expected_width
+                width_score = max(0, 100 - width_diff * 100)
+            else:
+                width_score = 0
+
+            # Оценка по высоте (вес 0.3)
+            if expected_height > 0:
+                height_diff = abs(height_mm - expected_height) / expected_height
+                height_score = max(0, 100 - height_diff * 100)
+            else:
+                height_score = 0
+
+            # Итоговый скор
+            score = width_score * 0.7 + height_score * 0.3
+
+            if score > best_score:
+                best_score = score
+                best_profile = profile
+
+        logger.info(f"🚛 Поиск профиля грузовика: ширина={width_mm:.1f}мм, высота={height_mm:.1f}мм")
+        if best_profile:
+            logger.info(f"   Найден: {best_profile.name} (score: {best_score:.1f}%)")
+        else:
+            logger.info(f"   Профиль не найден")
+
+        return best_profile, best_score if best_score > 40 else 0
+
+    # ═══════════════════════════════════════════════════════════
+    # ⭐ ОПРЕДЕЛЕНИЕ ТИПА КОРОБКИ ПО ВЫСОТЕ
+    # ═══════════════════════════════════════════════════════════
+
+    @classmethod
+    def _determine_box_type_by_height(cls, height_mm: float, points_count: int) -> Tuple[str, float, int]:
+        """
+        Определяет тип коробки по высоте и количеству точек.
+
+        Для коробок M и L:
+        - M: 370 мм высота, 350 мм ширина
+        - L: 600 мм высота, 400 мм ширина
+
+        Но! Коробка может быть не полностью заполнена,
+        поэтому используем эвристики.
+        """
+        # Если высота очень маленькая - коробка почти пустая
+        # Используем M по умолчанию
+        if height_mm < 100:
+            return "medium", 50, 350
+
+        # ═══════════════════════════════════════════════════════════
+        # ПРАВИЛА ОПРЕДЕЛЕНИЯ
+        # ═══════════════════════════════════════════════════════════
+
+        if height_mm < 200:
+            # Низкая высота - скорее M (или почти пустая L)
+            box_type = "medium"
+            confidence = 60
+            width_mm = 350
+            reason = "низкая высота (< 200мм) → M"
+
+        elif height_mm < 350:
+            # Средняя высота
+            if points_count > 20:
+                # Много точек - скорее L (больше площадь)
+                box_type = "large"
+                confidence = 55
+                width_mm = 400
+                reason = "средняя высота + много точек → L"
+            else:
+                box_type = "medium"
+                confidence = 65
+                width_mm = 350
+                reason = "средняя высота + мало точек → M"
+
+        elif height_mm < 500:
+            # Выше среднего
+            if points_count > 18:
+                box_type = "large"
+                confidence = 70
+                width_mm = 400
+                reason = "выше среднего + много точек → L"
+            else:
+                box_type = "large"
+                confidence = 60
+                width_mm = 400
+                reason = "выше среднего → L"
+
+        else:
+            # Высокая коробка
+            box_type = "large"
+            confidence = 80
+            width_mm = 400
+            reason = "высокая → L"
+
+        logger.info(f"📏 Определение типа по высоте:")
+        logger.info(f"   Высота: {height_mm:.1f} мм")
+        logger.info(f"   Точек: {points_count}")
+        logger.info(f"   Тип: {box_type} (ширина: {width_mm} мм, уверенность: {confidence}%)")
+        logger.info(f"   Причина: {reason}")
+
+        return box_type, confidence, width_mm
+
+    # ═══════════════════════════════════════════════════════════
+    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    # ═══════════════════════════════════════════════════════════
 
     @classmethod
     def _empty_result(cls, reason: str, status: str, floor_level: int = 0) -> Dict[str, Any]:
@@ -231,252 +738,44 @@ class ObjectDetector:
 
     @classmethod
     def _find_floor_level(cls, distances_mm: List[int]) -> int:
+        """
+        Находит уровень пола.
+        distances_mm уже содержат РЕАЛЬНЫЕ расстояния (со смещением +1000).
+        """
         if not distances_mm:
-            return 2000
+            return 2792  # Фиксированный пол
 
-        floor_candidates = [d for d in distances_mm if 1500 <= d <= 3000]
+        # ⭐ Ищем пол в диапазоне 2500-3000 мм (с учетом смещения)
+        floor_candidates = [d for d in distances_mm if 2500 <= d <= 3000]
 
         if floor_candidates:
             counter = Counter(floor_candidates)
             floor_level = counter.most_common(1)[0][0]
-            logger.info(f"🏗️ Уровень пола (из диапазона 1500-3000): {floor_level} мм")
+            logger.info(f"🏗️ Уровень пола (из диапазона 2500-3000): {floor_level} мм")
             return floor_level
 
-        counter = Counter(distances_mm)
-        floor_level = counter.most_common(1)[0][0]
-        logger.info(f"🏗️ Уровень пола (fallback): {floor_level} мм")
-        return floor_level
+        # Fallback - фиксированный пол
+        logger.info(f"🏗️ Уровень пола (fallback): 2792 мм")
+        return 2792
 
     @classmethod
     def _extract_object_points(cls, distances_mm: List[int], floor_level: int) -> List[int]:
-        """
-        Извлекает точки объекта, отсекая пол
-        """
+        """Извлекает точки объекта, отсекая пол"""
         if not distances_mm:
             return []
 
-        # Пол - это самые дальние точки (ближе к floor_level)
-        # Объект - это точки, которые значительно ближе к лидару
+        floor_threshold = 80  # мм - чуть больше, чтобы отсечь шум
 
-        # Находим порог для пола - точки в пределах 50мм от пола
-        floor_threshold = 50  # мм
-
-        # Точки объекта - те, что НЕ являются полом
         object_points = [d for d in distances_mm
                         if d < floor_level - floor_threshold]
 
-        # Если точек объекта мало, возможно объект отсутствует
+        # ✅ НЕ ВОЗВРАЩАЕМ ВСЕ ТОЧКИ!
+        # Если мало точек - возвращаем пустой список
         if len(object_points) < cls.MIN_POINTS_FOR_OBJECT:
-            # Возвращаем все точки (объект может быть низким)
-            return distances_mm
+            logger.warning(f"⚠️ Мало точек объекта: {len(object_points)} из {len(distances_mm)}")
+            return []  # ← ПУСТОЙ СПИСОК!
 
         return object_points
-
-    # ═══════════════════════════════════════════════════════════
-    # МЕТОД ИЗМЕРЕНИЯ ШИРИНЫ
-    # ═══════════════════════════════════════════════════════════
-
-    @classmethod
-    def _measure_box_width(cls, distances_mm: List[int], floor_level: int) -> Dict[str, float]:
-        if not distances_mm or len(distances_mm) < 3:
-            return {"width_mm": 0, "left_edge": 0, "right_edge": 0, "spread_mm": 0, "points_on_edges": 0}
-        
-        points = [(i, d) for i, d in enumerate(distances_mm) if d < floor_level - 50]
-        
-        if len(points) < 2:
-            return {"width_mm": 0, "left_edge": 0, "right_edge": 0, "spread_mm": 0, "points_on_edges": 0}
-        
-        left_edge = None
-        right_edge = None
-        
-        for i in range(1, len(points) - 1):
-            prev_dist = points[i-1][1]
-            curr_dist = points[i][1]
-            next_dist = points[i+1][1]
-            
-            grad1 = abs(curr_dist - prev_dist)
-            grad2 = abs(next_dist - curr_dist)
-            
-            if grad1 > 50 and grad2 > 50:
-                if left_edge is None:
-                    left_edge = points[i][0]
-                elif right_edge is None and points[i][0] > left_edge + 3:
-                    right_edge = points[i][0]
-        
-        if left_edge is None or right_edge is None:
-            left_edge = points[0][0]
-            right_edge = points[-1][0]
-        
-        left_dist = None
-        right_dist = None
-        for idx, dist in points:
-            if idx == left_edge:
-                left_dist = dist
-            if idx == right_edge:
-                right_dist = dist
-        
-        width_mm = abs(right_dist - left_dist) if left_dist and right_dist else 0
-        
-        points_on_edges = 0
-        for idx, dist in points:
-            if idx == left_edge or idx == right_edge:
-                points_on_edges += 1
-        
-        return {
-            "width_mm": round(width_mm, 1),
-            "left_edge": left_edge,
-            "right_edge": right_edge,
-            "spread_mm": max(distances_mm) - min(distances_mm),
-            "points_on_edges": points_on_edges
-        }
-
-    # ═══════════════════════════════════════════════════════════
-    # МЕТОДЫ ИДЕНТИФИКАЦИИ С ВЕСАМИ
-    # ═══════════════════════════════════════════════════════════
-
-    @classmethod
-    def _find_matching_profile_enhanced(cls, distances_mm: List[int], floor_level_mm: int, width_mm: float = 0) -> Dict[str, Any]:
-        logger.info("[PROFILE] _find_matching_profile_enhanced ВЫЗВАН!")
-
-        if not distances_mm or len(distances_mm) < 5:
-            return {
-                "profile": None,
-                "confidence": 0,
-                "reason": "Нет данных",
-                "matches": []
-            }
-
-        points_count = len(distances_mm)
-        spread = max(distances_mm) - min(distances_mm) if distances_mm else 0
-
-        min_dist = min(distances_mm) if distances_mm else 0
-        object_height = floor_level_mm - min_dist if floor_level_mm > min_dist else 0
-
-        logger.info(f"[PROFILE] ПОИСК: точек={points_count}, разброс={spread}, высота={object_height:.0f}мм, ширина={width_mm:.1f}мм")
-        logger.info(f"[PROFILE] Доступные профили: {[name for name in vehicle_profiles.profiles.keys()]}")
-
-        matches = []
-
-        for name, profile in vehicle_profiles.profiles.items():
-            if profile.vehicle_type != "box":
-                continue
-
-            logger.info(f"  Проверяем профиль: {name}")
-
-            score = 0
-            reasons = []
-
-            # 1. Количество точек → ВЕС 30
-            p_min, p_max = profile.points_range
-            if p_min <= points_count <= p_max:
-                center = (p_min + p_max) / 2
-                if p_max - p_min > 0:
-                    closeness = 1 - abs(points_count - center) / ((p_max - p_min) / 2)
-                    closeness = max(0, min(1, closeness))
-                else:
-                    closeness = 1.0
-                score += 30 * closeness
-                reasons.append(f"точек {points_count} в [{p_min}-{p_max}] (близость: {closeness:.2f})")
-            else:
-                if points_count < p_min:
-                    score -= 15
-                    reasons.append(f"точек {points_count} < {p_min} (-15)")
-                else:
-                    score -= 15
-                    reasons.append(f"точек {points_count} > {p_max} (-15)")
-
-            # 2. ШИРИНА → ВЕС 25
-            if width_mm > 0:
-                expected_width = profile.width_m * 1000
-                width_diff = abs(width_mm - expected_width)
-                
-                if width_diff < 30:
-                    score += 25
-                    reasons.append(f"ширина {width_mm:.1f}мм ≈ {expected_width:.0f}мм (+25)")
-                elif width_diff < 60:
-                    score += 18
-                    reasons.append(f"ширина {width_mm:.1f}мм близка к {expected_width:.0f}мм (+18)")
-                elif width_diff < 100:
-                    score += 10
-                    reasons.append(f"ширина {width_mm:.1f}мм умеренно близка к {expected_width:.0f}мм (+10)")
-                else:
-                    score -= 10
-                    reasons.append(f"ширина {width_mm:.1f}мм далека от {expected_width:.0f}мм (-10)")
-
-            # 3. Разброс → ВЕС 25
-            s_min, s_max = profile.spread_range
-            if s_min <= spread <= s_max:
-                center = (s_min + s_max) / 2
-                if s_max - s_min > 0:
-                    closeness = 1 - abs(spread - center) / ((s_max - s_min) / 2)
-                    closeness = max(0, min(1, closeness))
-                else:
-                    closeness = 1.0
-                score += 25 * closeness
-                reasons.append(f"разброс {spread} в [{s_min}-{s_max}] (близость: {closeness:.2f})")
-            else:
-                if spread < s_min:
-                    score -= 15
-                    reasons.append(f"разброс {spread} < {s_min} (-15)")
-                else:
-                    score -= 15
-                    reasons.append(f"разброс {spread} > {s_max} (-15)")
-
-            # 4. Высота → ВЕС 20
-            if object_height > 0:
-                expected_height = profile.height_m * 1000
-                height_diff = abs(object_height - expected_height)
-
-                if height_diff < 30:
-                    score += 20
-                    reasons.append(f"высота {object_height:.0f}≈{expected_height:.0f} (+20)")
-                elif height_diff < 60:
-                    score += 15
-                    reasons.append(f"высота {object_height:.0f}≈{expected_height:.0f} (+15)")
-                elif height_diff < 100:
-                    score += 10
-                    reasons.append(f"высота {object_height:.0f}≈{expected_height:.0f} (+10)")
-                else:
-                    score -= 10
-                    reasons.append(f"высота {object_height:.0f}≠{expected_height:.0f} (-10)")
-
-            # БОНУС: если точек мало, но высота большая → это L
-            if points_count < 10 and object_height > 400 and profile.box_type == "large":
-                score += 15
-                reasons.append(f"🔥 БОНУС: мало точек ({points_count}) + большая высота ({object_height:.0f}мм) → L (+15)")
-
-            matches.append({
-                "name": name,
-                "profile": profile,
-                "score": round(score, 1),
-                "reasons": reasons,
-                "vehicle_type": profile.vehicle_type,
-                "object_height": object_height
-            })
-
-            logger.info(f"    score: {score:.1f}")
-
-        matches.sort(key=lambda x: x["score"], reverse=True)
-        best = matches[0] if matches else None
-
-        logger.info(f"[PROFILE] ТОП-3 ПРОФИЛЯ ПО ВЕСАМ:")
-        for i, m in enumerate(matches[:3]):
-            logger.info(f"  #{i+1}: {m['name']} (score: {m['score']})")
-
-        if best and len(matches) > 1:
-            second_score = matches[1]["score"]
-            if best["score"] - second_score < 10:
-                logger.warning(f"⚠️ Маленький отрыв между профилями: {best['name']} ({best['score']}) vs {matches[1]['name']} ({second_score})")
-
-        logger.info(f"[PROFILE] ЛУЧШИЙ: {best['name'] if best else 'НЕТ'} (score: {best['score'] if best else 0})")
-
-        return {
-            "profile": best["profile"] if best else None,
-            "confidence": max(0, best["score"]) if best else 0,
-            "reason": best["reasons"][0] if best and best["reasons"] else "нет совпадений",
-            "matches": matches[:3],
-            "object_height_mm": object_height
-        }
 
     # ═══════════════════════════════════════════════════════════
     # МЕТОДЫ ФИЛЬТРАЦИИ ПО ГРАНИЦАМ ОБЪЕКТА
@@ -495,7 +794,7 @@ class ObjectDetector:
         logger.info(f"📦 Фильтрация по профилю {profile.name}:")
         logger.info(f"  Было: {len(distances_mm)} точек")
         logger.info(f"  Стало: {len(filtered)} точек")
-        logger.info(f"  Отброшено: {len(distances_mm) - len(filtered)} точек (за пределами объекта)")
+        logger.info(f"  Отброшено: {len(distances_mm) - len(filtered)} точек")
 
         return filtered
 
@@ -572,7 +871,7 @@ class ObjectDetector:
 
     @classmethod
     def _determine_status(cls, points_count: int, object_height: float,
-                         profile: Any = None, spread: float = 0) -> Dict[str, Any]:
+                            profile: Any = None, spread: float = 0) -> Dict[str, Any]:
         if profile:
             is_empty, confidence = profile.is_empty(object_height, points_count)
             return {
