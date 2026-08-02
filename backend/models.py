@@ -234,4 +234,10 @@ class LidarMeasurement(Base):
     empty_reason = Column(String(255), nullable=True)  
     
     # Связи
-    trip = relationship("Trip", back_populates="lidar_measurements") 
+    trip = relationship("Trip", back_populates="lidar_measurements")
+
+
+from lab_models import (
+    CoalFraction, CoalGrade, LabAuditLog, LabExperiment, LabExperimentStatus,
+    LabMeasurement, LabVolumeUnit, Supplier,
+)

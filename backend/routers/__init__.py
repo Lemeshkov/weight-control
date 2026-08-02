@@ -1,4 +1,5 @@
-# backend/routers/__init__.py
-from routers.weighing import router
+"""FastAPI routers.
 
-__all__ = ["router"]
+Submodules are intentionally not imported here: each application entrypoint
+must opt in to its own routers without loading unrelated hardware services.
+"""

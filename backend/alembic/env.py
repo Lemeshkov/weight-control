@@ -3,19 +3,22 @@ import sys
 import os
 
 # Принудительно добавляем корень проекта
-project_root = r"C:\Users\1111111\weight-control"
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if backend_root not in sys.path:
+    sys.path.insert(0, backend_root)
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from alembic import context
 
 # Теперь импортируем модели
-from app.database import Base
-from app import models
+from database import Base
+import models
 
 config = context.config
+
+from database import DATABASE_URL
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

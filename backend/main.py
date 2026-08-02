@@ -16,7 +16,7 @@ from services.camera_client import CameraClient
 from services.scale_monitor import scale_monitor
 from crud import TripCRUD, VehicleCRUD
 from config import settings
-from routers import weighing, lidar, scan_3d, camera
+from routers import weighing, lidar, scan_3d, camera, laboratory
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -96,6 +96,7 @@ app.include_router(weighing.router)
 app.include_router(lidar.router)
 app.include_router(scan_3d.router)
 app.include_router(camera.router)
+app.include_router(laboratory.router)
 
 # Глобальный объект лидара
 # lidar_client = LidarClient(host="192.168.1.101", port=2111)

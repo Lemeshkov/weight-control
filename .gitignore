@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+API KEY GPT.txt
+
 .Python
 env/
 venv/
@@ -43,6 +46,9 @@ backend/*.log
 
 # Диагностическая папка
 sick_diagnostic/
+sick_diagnostic/*.txt
+sick_diagnostic/*.json
+!sick_diagnostic/*.py
 
 # FastAPI
 backend/.mypy_cache/
@@ -150,6 +156,7 @@ Icon
 # Thumbnail cache
 ._*
 *~
+
 
 # Environment variables
 .env

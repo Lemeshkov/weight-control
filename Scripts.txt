@@ -54,3 +54,18 @@ curl http://localhost:8000/api/health
 60° (-30°…+30°)	"sWN LMPoutputRange 1 5000 FFFF2120 2120"
 
 пароль servicelevel сервис авторизация 
+
+#---------------------GIT
+# 1. Работа в develop
+git checkout develop
+git add .
+git commit -m "fix: something"
+git push origin develop
+
+# 2. Когда всё готово — влить в main
+git checkout main
+git merge develop
+git push origin main
+
+# 3. Вернуться в develop
+git checkout develop
