@@ -12,7 +12,7 @@ from services.object_detector import ObjectDetector
 logger = logging.getLogger(__name__)
 
 class LidarClient:
-    def __init__(self, host: str = "192.168.1.101", port: int = 2111):
+    def __init__(self, host: str = "10.79.24.169", port: int = 2111):
         self.host = host
         self.port = port
         self.sock: Optional[socket.socket] = None

@@ -199,7 +199,8 @@ async def get_lidar_scan():
         "timestamp": datetime.now().isoformat(),
         "points_count": points_count,
         "distances_mm": object_points,
-        "distances_m": [d / 1000 for d in object_points] if object_points else [],
+        "distances_m": [d / 1000 for d in object_points] if object_points else [],
+
         "scan_geometry": parsed.get("scan_geometry", {
             "start_angle_deg": -5.0,
             "stop_angle_deg": 185.0,
@@ -242,7 +243,7 @@ async def get_lidar_scan():
 async def get_lidar_status():
     return {
         "connected": lidar_client.is_connected,
-        "host": "192.168.1.101",
+        "host": "10.79.24.169",
         "port": 2111
     }
 
@@ -866,7 +867,8 @@ async def test_by_weight(
 #         "timestamp": datetime.now().isoformat(),
 #         "points_count": points_count,
 #         "distances_mm": object_points,
-#         "distances_m": [d / 1000 for d in object_points] if object_points else [],
+#         "distances_m": [d / 1000 for d in object_points] if object_points else [],
+
 #        "scan_geometry": parsed.get("scan_geometry", {
 #            "start_angle_deg": -5.0,
 #            "stop_angle_deg": 185.0,
