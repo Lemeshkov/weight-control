@@ -4,6 +4,7 @@ import httpx
 from typing import Dict, Optional, List, Any
 from datetime import datetime, timedelta
 import logging
+import time
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -11,56 +12,117 @@ logger = logging.getLogger(__name__)
 
 class UniServerClient:
     def __init__(self):
-        self.base_url = settings.UNISERVER_URL
+        self.base_url = settings.UNISERVER_URL.rstrip("/")
         self.username = settings.UNISERVER_USER
         self.password = settings.UNISERVER_PASSWORD
+        self._last_error_log = {}
         self.auth_params = {
             "auth_user": self.username,
             "auth_password": self.password
         }
+
+        logger.info("UniServer configured: base_url=%s", self.base_url)
+
+    def _build_url(self, endpoint: str) -> str:
+        return f"{self.base_url}/{endpoint.lstrip('/')}"
+
+    def _log_request_error(self, key: str, message: str, *args) -> None:
+        now = time.monotonic()
+        if now - self._last_error_log.get(key, 0) >= 30:
+            self._last_error_log[key] = now
+            logger.error(message, *args)
+
+    async def _get(self, endpoint: str, params: dict) -> Optional[httpx.Response]:
+        url = self._build_url(endpoint)
+        started_at = time.perf_counter()
+        logger.info("UniServer request: base_url=%s endpoint=%s", self.base_url, endpoint)
+
+        try:
+            async with httpx.AsyncClient(timeout=settings.UNISERVER_TIMEOUT) as client:
+                response = await client.get(url, params=params)
+
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            logger.info(
+                "UniServer response: endpoint=%s status=%s duration_ms=%.1f",
+                endpoint, response.status_code, duration_ms,
+            )
+            response.raise_for_status()
+            return response
+        except httpx.ConnectTimeout as exc:
+            error_type = "connect_timeout"
+            error = exc
+        except httpx.ReadTimeout as exc:
+            error_type = "read_timeout"
+            error = exc
+        except httpx.ConnectError as exc:
+            error_type = "connection_refused_or_unreachable"
+            error = exc
+        except httpx.TimeoutException as exc:
+            error_type = type(exc).__name__
+            error = exc
+        except httpx.HTTPStatusError as exc:
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            status_code = exc.response.status_code
+            self._log_request_error(
+                f"http_{status_code}:{endpoint}",
+                "UniServer HTTP error: endpoint=%s status=%s duration_ms=%.1f",
+                endpoint, status_code, duration_ms,
+            )
+            return None
+        except httpx.HTTPError as exc:
+            error_type = type(exc).__name__
+            error = exc
+
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        self._log_request_error(
+            f"{error_type}:{endpoint}",
+            "UniServer network error: endpoint=%s type=%s duration_ms=%.1f error=%s",
+            endpoint, error_type, duration_ms, error,
+        )
+        return None
     
     async def _send_command(self, name: str, value: dict = None) -> Optional[Any]:
         """Универсальный метод для отправки команд в UniServer"""
-        try:
-            params = {**self.auth_params, "Name": name}
-            if value:
-                params["Value"] = value
-            
-            async with httpx.AsyncClient(timeout=settings.UNISERVER_TIMEOUT) as client:
-                url = f"{self.base_url}/core/SendMsg"
-                response = await client.get(url, params=params)
-                response.raise_for_status()
-                
-                if response.headers.get("content-type") == "application/json":
-                    return response.json()
-                else:
-                    return response.text
-                
-        except httpx.TimeoutException:
-            logger.error(f"❌ UniServer timeout: {name}")
+        params = {**self.auth_params, "Name": name}
+        if value:
+            params["Value"] = value
+
+        endpoint = "/core/SendMsg"
+        response = await self._get(endpoint, params)
+        if response is None:
             return None
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ UniServer HTTP error: {name} - {e}")
-            return None
-        except Exception as e:
-            logger.error(f"❌ UniServer error: {name} - {e}")
-            return None
+
+        if response.headers.get("content-type", "").lower().startswith("application/json"):
+            try:
+                return response.json()
+            except ValueError as exc:
+                self._log_request_error(
+                    f"invalid_json:{endpoint}",
+                    "UniServer response error: endpoint=%s type=invalid_json error=%s",
+                    endpoint, exc,
+                )
+                return None
+        return response.text
     
     async def get_scale_params(self) -> Optional[Dict]:
         """Получить параметры весов"""
-        try:
-            async with httpx.AsyncClient(timeout=settings.UNISERVER_TIMEOUT) as client:
-                url = f"{self.base_url}/core/plugins/AutoScale1/Parameters"
-                response = await client.get(url, params=self.auth_params)
-                response.raise_for_status()
-                data = response.json()
-                
-                logger.info(f"✅ Successfully fetched scale data: {data.get('StateName')}")
-                return data
-                
-        except Exception as e:
-            logger.error(f"❌ UniServer error: {e}")
+        endpoint = "/core/plugins/AutoScale1/Parameters"
+        response = await self._get(endpoint, self.auth_params)
+        if response is None:
             return None
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            self._log_request_error(
+                f"invalid_json:{endpoint}",
+                "UniServer response error: endpoint=%s type=invalid_json error=%s",
+                endpoint, exc,
+            )
+            return None
+
+        logger.info(f"✅ Successfully fetched scale data: {data.get('StateName')}")
+        return data
     
     def parse_weighing_result(self, data: Dict) -> Dict:
         """Извлечь ключевую информацию из ответа UniServer"""

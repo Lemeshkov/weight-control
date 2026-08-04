@@ -9,7 +9,7 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://weight_user:weight_pass@localhost:5433/weight_control")
     
     # UniServer API
-    UNISERVER_URL: str = os.getenv("UNISERVER_URL", "http://185.30.12.108:8087")
+    UNISERVER_URL: str = os.getenv("UNISERVER_URL", "http://10.79.24.2:8087")
     UNISERVER_USER: str = os.getenv("UNISERVER_USER", "user")
     UNISERVER_PASSWORD: str = os.getenv("UNISERVER_PASSWORD", "user")
     UNISERVER_TIMEOUT: int = int(os.getenv("UNISERVER_TIMEOUT", "30"))
