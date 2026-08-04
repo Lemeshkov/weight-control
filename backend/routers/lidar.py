@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime
 import logging
-from services.lidar_client import LidarClient
+from services.lidar_client import lidar_client
 from sqlalchemy.orm import Session
 from database import get_db
 import time
@@ -15,9 +15,6 @@ from services.object_detector import ObjectDetector
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lidar", tags=["lidar"])
-
-lidar_client = LidarClient(host="192.168.1.101", port=2111)
-
 
 class SingleScanRequest(BaseModel):
     trip_id: Optional[int] = None
@@ -243,8 +240,8 @@ async def get_lidar_scan():
 async def get_lidar_status():
     return {
         "connected": lidar_client.is_connected,
-        "host": "10.79.24.169",
-        "port": 2111
+        "host": lidar_client.host,
+        "port": lidar_client.port
     }
 
 

@@ -12,7 +12,9 @@ from services.object_detector import ObjectDetector
 logger = logging.getLogger(__name__)
 
 class LidarClient:
-    def __init__(self, host: str = "10.79.24.169", port: int = 2111):
+    def __init__(self, host: Optional[str] = None, port: Optional[int] = None):
+        host = host or os.getenv("LIDAR_HOST", "10.79.24.169")
+        port = port if port is not None else int(os.getenv("LIDAR_PORT", "2111"))
         self.host = host
         self.port = port
         self.sock: Optional[socket.socket] = None
@@ -67,9 +69,11 @@ class LidarClient:
             logger.info(f"✅ Подключен к {self.host}:{self.port}")
 
             # АВТОРИЗАЦИЯ (ОБЯЗАТЕЛЬНО!)
-            self._send_raw("sMN SetAccessMode 3 F4724744")
+            if self._send_raw("sMN SetAccessMode 3 F4724744") is None:
+                raise ConnectionError("No response to SetAccessMode")
             time.sleep(0.2)
-            self._send_raw("sMN Run")
+            if self._send_raw("sMN Run") is None:
+                raise ConnectionError("No response to Run")
             time.sleep(0.2)
 
             self.is_connected = True
@@ -81,6 +85,14 @@ class LidarClient:
             return True
 
         except Exception as e:
+            self.is_connected = False
+            if self.sock:
+                try:
+                    self.sock.close()
+                except OSError:
+                    pass
+                finally:
+                    self.sock = None
             logger.error(f"❌ Ошибка подключения: {e}")
             return False
 
@@ -606,10 +618,12 @@ class LidarClient:
         if self.sock:
             try:
                 self.sock.close()
-            except:
+            except OSError:
                 pass
-            self.is_connected = False
-            logger.info("🔌 Отключен")
+            finally:
+                self.sock = None
+        self.is_connected = False
+        logger.info("🔌 Отключен")
 
     def check_if_empty(self, scan_data: Dict) -> Dict:
         return ObjectDetector.process_scan(scan_data.get("distances_mm", []))
