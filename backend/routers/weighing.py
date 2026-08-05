@@ -8,6 +8,8 @@ import logging
 from database import get_db
 import models
 from services.uniserver_client import uniserver_client
+from services.lidar_profile_buffer import lidar_profile_buffer
+from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 from crud import VehicleCRUD, TripCRUD
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,7 @@ async def start_trip(db: Session = Depends(get_db)):
             logger.warning(f"⚠️ Рейс с кодом {doc_id} уже существует (ID: {existing_by_code.id})")
             # Если рейс уже существует, но активный - возвращаем его
             if existing_by_code.status == models.TripStatus.ENTRY:
+                await weighing_lidar_coordinator.bind_trip(existing_by_code.id)
                 return {
                     "trip_id": existing_by_code.id,
                     "message": f"Рейс уже существует для {plate_number}, вес {weight}кг",
@@ -167,6 +170,7 @@ async def start_trip(db: Session = Depends(get_db)):
     
     commit_or_conflict(db, "Не удалось создать рейс: конфликт данных")
     db.refresh(trip)
+    await weighing_lidar_coordinator.bind_trip(trip.id)
     
     logger.info(f"✅ Создан рейс {trip.id} для {plate_number}, вес {weight}кг, код: {doc_id}")
     
@@ -410,6 +414,7 @@ async def auto_create_trip(db: Session = Depends(get_db)):
         if active_trip.entry_measurement:
             active_trip.entry_measurement.weight_brutto = weight
             db.commit()
+            await weighing_lidar_coordinator.bind_trip(active_trip.id)
             return {
                 "status": "updated",
                 "trip_id": active_trip.id,
@@ -443,6 +448,7 @@ async def auto_create_trip(db: Session = Depends(get_db)):
     db.add(uniserver_event)
     
     db.commit()
+    await weighing_lidar_coordinator.bind_trip(trip.id)
     
     logger.info(f" Автоматически создан рейс {trip.id} для {plate_number}, вес {weight} кг")
     
@@ -474,9 +480,9 @@ async def sync_measurement(
     # Получаем данные с лидара
     from routers.lidar import lidar_client
     if not lidar_client.is_connected:
-        lidar_client.connect()
+        raise HTTPException(status_code=503, detail="Лидар не подключен")
     
-    scan_data = lidar_client.get_scan_data()
+    scan_data = lidar_profile_buffer.latest_raw_data()
     parsed = lidar_client.parse_scan_data(scan_data, filter_angle=True, separate_object=True)
     
     # Рассчитываем объем

@@ -16,7 +16,9 @@ from services.camera_client import CameraClient
 from services.scale_monitor import scale_monitor
 from crud import TripCRUD, VehicleCRUD
 from config import settings
-from routers import weighing, lidar, scan_3d, camera, laboratory
+from routers import weighing, lidar, scan_3d, camera, laboratory, control
+from services.lidar_profile_buffer import lidar_profile_buffer
+from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -97,6 +99,7 @@ app.include_router(lidar.router)
 app.include_router(scan_3d.router)
 app.include_router(camera.router)
 app.include_router(laboratory.router)
+app.include_router(control.router)
 
 # Глобальный объект лидара
 # lidar_client = LidarClient(host="192.168.1.101", port=2111)
@@ -365,6 +368,9 @@ async def startup_event():
     logger.info(f"   UniServer URL: {settings.UNISERVER_URL}")
     logger.info("=" * 50)
     
+    await lidar_profile_buffer.start()
+    await weighing_lidar_coordinator.check_persistence()
+
     # Проверяем подключение к UniServer
     test_connection = await uniserver_client.get_scale_params()
     if test_connection:
@@ -374,13 +380,15 @@ async def startup_event():
     
     # ✅ ЗАПУСКАЕМ МОНИТОРИНГ БЕЗ БЛОКИРОВКИ
     await scale_monitor.start()
-    logger.info("🔄 Scale monitor started (checking every 2 seconds)")
+    logger.info("🔄 Scale monitor started (checking every %s ms)", settings.SCALE_POLL_INTERVAL_MS)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     # Останавливаем мониторинг весов
     await scale_monitor.stop()
+    await weighing_lidar_coordinator.stop()
+    await lidar_profile_buffer.stop()
     logger.info("⏹ Scale monitor stopped")
     
     # if lidar_client:

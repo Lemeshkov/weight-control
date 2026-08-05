@@ -7,6 +7,7 @@ import json
 import os
 from typing import Optional, Dict, Any, List
 from collections import Counter, deque
+from threading import RLock
 from services.object_detector import ObjectDetector
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ class LidarClient:
         self.port = port
         self.sock: Optional[socket.socket] = None
         self.is_connected = False
+        self._io_lock = RLock()
 
         # ═══════════════════════════════════════════════════════════
         # ПРАВИЛЬНЫЕ НАСТРОЙКИ (ФИЗИЧЕСКАЯ КАРТИНА)
@@ -97,6 +99,10 @@ class LidarClient:
             return False
 
     def _send_raw(self, cmd: str) -> Optional[str]:
+        with self._io_lock:
+            return self._send_raw_locked(cmd)
+
+    def _send_raw_locked(self, cmd: str) -> Optional[str]:
         if not self.sock:
             return None
 
@@ -117,6 +123,10 @@ class LidarClient:
             return None
 
     def get_scan_data(self) -> Optional[str]:
+        with self._io_lock:
+            return self._get_scan_data_locked()
+
+    def _get_scan_data_locked(self) -> Optional[str]:
         if not self.sock or not self.is_connected:
             logger.error("Нет соединения")
             return None
@@ -615,14 +625,15 @@ class LidarClient:
         }
 
     def disconnect(self):
-        if self.sock:
-            try:
-                self.sock.close()
-            except OSError:
-                pass
-            finally:
-                self.sock = None
-        self.is_connected = False
+        with self._io_lock:
+            if self.sock:
+                try:
+                    self.sock.close()
+                except OSError:
+                    pass
+                finally:
+                    self.sock = None
+            self.is_connected = False
         logger.info("🔌 Отключен")
 
     def check_if_empty(self, scan_data: Dict) -> Dict:

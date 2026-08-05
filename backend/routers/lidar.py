@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime
 import logging
 from services.lidar_client import lidar_client
+from services.lidar_profile_buffer import lidar_profile_buffer
 from sqlalchemy.orm import Session
 from database import get_db
 import time
@@ -82,10 +83,9 @@ async def get_lidar_scan():
     Получить данные сканирования с детекцией объекта и ОБЪЕМОМ
     """
     if not lidar_client.is_connected:
-        if not lidar_client.connect():
-            raise HTTPException(status_code=503, detail="Лидар не подключен")
+        raise HTTPException(status_code=503, detail="Лидар не подключен")
 
-    scan_data = lidar_client.get_scan_data()
+    scan_data = lidar_profile_buffer.latest_raw_data()
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
 
@@ -252,10 +252,9 @@ async def measure_and_save(
 ):
     """Выполнить одно сканирование и сохранить в БД"""
     if not lidar_client.is_connected:
-        if not lidar_client.connect():
-            raise HTTPException(status_code=503, detail="Лидар не подключен")
+        raise HTTPException(status_code=503, detail="Лидар не подключен")
 
-    scan_data = lidar_client.get_scan_data()
+    scan_data = lidar_profile_buffer.latest_raw_data()
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
 
@@ -400,8 +399,7 @@ async def get_measurement(measurement_id: int, db: Session = Depends(get_db)):
 @router.get("/angle")
 async def get_lidar_angle():
     if not lidar_client.is_connected:
-        if not lidar_client.connect():
-            raise HTTPException(status_code=503, detail="Лидар не подключен")
+        raise HTTPException(status_code=503, detail="Лидар не подключен")
 
     angle_info = lidar_client.get_current_angle_range()
 
@@ -482,10 +480,9 @@ async def add_profile(
 async def debug_points():
     """Диагностика количества точек до и после фильтрации"""
     if not lidar_client.is_connected:
-        if not lidar_client.connect():
-            raise HTTPException(status_code=503, detail="Лидар не подключен")
+        raise HTTPException(status_code=503, detail="Лидар не подключен")
 
-    scan_data = lidar_client.get_scan_data()
+    scan_data = lidar_profile_buffer.latest_raw_data()
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
 
@@ -520,10 +517,9 @@ async def get_frontend_format():
     Получить данные в формате, который ожидает фронтенд
     """
     if not lidar_client.is_connected:
-        if not lidar_client.connect():
-            raise HTTPException(status_code=503, detail="Лидар не подключен")
+        raise HTTPException(status_code=503, detail="Лидар не подключен")
 
-    scan_data = lidar_client.get_scan_data()
+    scan_data = lidar_profile_buffer.latest_raw_data()
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
 
@@ -575,10 +571,9 @@ async def test_by_weight(
     система показывает, какой объем получился по лидару.
     """
     if not lidar_client.is_connected:
-        if not lidar_client.connect():
-            raise HTTPException(status_code=503, detail="Лидар не подключен")
+        raise HTTPException(status_code=503, detail="Лидар не подключен")
 
-    scan_data = lidar_client.get_scan_data()
+    scan_data = lidar_profile_buffer.latest_raw_data()
     if not scan_data:
         raise HTTPException(status_code=500, detail="Не удалось получить данные")
 

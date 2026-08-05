@@ -203,6 +203,8 @@ class TripCRUD:
     
         db.commit()
         db.refresh(trip)
+        from services.weighing_lidar_coordinator import weighing_lidar_coordinator
+        await weighing_lidar_coordinator.bind_trip(trip.id)
         return trip
     
     # @staticmethod

@@ -99,6 +99,7 @@ class Trip(Base):
     stock_events = relationship("StockEvent", back_populates="trip")
     uniserver_events = relationship("UniserverEvent", back_populates="trip")
     lidar_measurements = relationship("LidarMeasurement", back_populates="trip")
+    lidar_pass_sessions = relationship("LidarPassSession", back_populates="trip")
 class EntryMeasurement(Base):
     __tablename__ = "entry_measurements"
     
@@ -235,6 +236,45 @@ class LidarMeasurement(Base):
     
     # Связи
     trip = relationship("Trip", back_populates="lidar_measurements")
+
+
+class LidarPassSession(Base):
+    __tablename__ = "lidar_pass_sessions"
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True, index=True)
+    status = Column(String(32), nullable=False, index=True)
+    workflow_state = Column(String(64), nullable=False)
+    trigger_type = Column(String(32), nullable=False, default="LOAD_SCALE")
+    trigger_state_name = Column(String(64), nullable=False, default="LoadScale")
+    started_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    load_scale_at = Column(DateTime(timezone=True), nullable=False)
+    stable_weight_at = Column(DateTime(timezone=True), nullable=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    pre_trigger_seconds = Column(Float, nullable=False, default=5)
+    pre_trigger_profiles_count = Column(Integer, nullable=False, default=0)
+    profiles_count = Column(Integer, nullable=False, default=0)
+    valid_profiles_count = Column(Integer, nullable=False, default=0)
+    points_total = Column(Integer, nullable=False, default=0)
+    points_valid = Column(Integer, nullable=False, default=0)
+    trigger_weight_kg = Column(Float, nullable=True)
+    stable_weight_kg = Column(Float, nullable=True)
+    maximum_observed_weight_kg = Column(Float, nullable=True)
+    weight_samples_count = Column(Integer, nullable=False, default=0)
+    state_timestamps = Column(JSON, nullable=False, default=dict)
+    estimated_volume_m3 = Column(Float, nullable=True)
+    volume_status = Column(String(32), nullable=False, default="NOT_CALCULATED")
+    data_file_path = Column(String(1000), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now().astimezone())
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now().astimezone(),
+        onupdate=lambda: datetime.now().astimezone(),
+    )
+
+    trip = relationship("Trip", back_populates="lidar_pass_sessions")
 
 
 from lab_models import (

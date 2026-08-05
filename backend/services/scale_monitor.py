@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 import models
 from services.uniserver_client import uniserver_client
+from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 from crud import VehicleCRUD, TripCRUD
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,7 @@ class ScaleMonitor:
         while self.running:
             try:
                 await self.check_scale()
-                await asyncio.sleep(2)
+                await asyncio.sleep(settings.SCALE_POLL_INTERVAL_MS / 1000)
             except asyncio.CancelledError:
                 logger.info("⏹ Мониторинг остановлен")
                 break
@@ -51,7 +53,10 @@ class ScaleMonitor:
         try:
             data = await uniserver_client.get_current_weighting()
             if not data:
+                await weighing_lidar_coordinator.on_scale_unavailable()
                 return
+
+            await weighing_lidar_coordinator.on_scale_snapshot(data)
             
             plate_number = data.get('plate_number', '')
             weight = data.get('weight', 0)
@@ -94,6 +99,7 @@ class ScaleMonitor:
             
             if active_trip:
                 logger.info(f"ℹ️ Уже есть активный рейс {active_trip.id} для {plate_number}")
+                await weighing_lidar_coordinator.bind_trip(active_trip.id)
                 return
             
             trip = models.Trip(
@@ -111,6 +117,7 @@ class ScaleMonitor:
             db.add(entry)
             
             db.commit()
+            await weighing_lidar_coordinator.bind_trip(trip.id)
             logger.info(f"🚛 ✅ СОЗДАН РЕЙС {trip.id} для {plate_number}, вес {weight} кг")
             
         except Exception as e:

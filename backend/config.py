@@ -13,6 +13,20 @@ class Settings:
     UNISERVER_USER: str = os.getenv("UNISERVER_USER", "user")
     UNISERVER_PASSWORD: str = os.getenv("UNISERVER_PASSWORD", "user")
     UNISERVER_TIMEOUT: int = int(os.getenv("UNISERVER_TIMEOUT", "30"))
+
+    # Unified weighing/lidar control
+    SCALE_POLL_INTERVAL_MS: int = int(os.getenv("SCALE_POLL_INTERVAL_MS", "500"))
+    SCALE_EMPTY_THRESHOLD_KG: float = float(os.getenv("SCALE_EMPTY_THRESHOLD_KG", "100"))
+    SCALE_STABLE_CONFIRM_SAMPLES: int = int(os.getenv("SCALE_STABLE_CONFIRM_SAMPLES", "3"))
+    SCALE_EMPTY_CONFIRM_SAMPLES: int = int(os.getenv("SCALE_EMPTY_CONFIRM_SAMPLES", "3"))
+    LIDAR_BUFFER_SECONDS: float = float(os.getenv("LIDAR_BUFFER_SECONDS", "5"))
+    LIDAR_POST_STABLE_SECONDS: float = float(os.getenv("LIDAR_POST_STABLE_SECONDS", "1"))
+    LIDAR_PROFILE_MAX_COUNT: int = int(os.getenv("LIDAR_PROFILE_MAX_COUNT", "1000"))
+    LIDAR_RECONNECT_SECONDS: float = float(os.getenv("LIDAR_RECONNECT_SECONDS", "2"))
+    LIDAR_PASS_DATA_PATH: str = os.getenv(
+        "LIDAR_PASS_DATA_PATH",
+        os.path.join(os.path.dirname(__file__), "data", "lidar_passes"),
+    )
     
     # Camera
     CAMERA_TYPE: str = os.getenv("CAMERA_TYPE", "ip")
