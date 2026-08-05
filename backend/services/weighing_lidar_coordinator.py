@@ -9,6 +9,7 @@ from config import settings
 from services.lidar_pass_storage import AtomicLidarPassStorage, lidar_pass_storage
 from services.lidar_profile_buffer import LidarProfile, LidarProfileBuffer, lidar_profile_buffer
 from services.lidar_session_repository import (
+    InMemoryLidarSessionRepository,
     LidarSessionRepository,
     SqlAlchemyLidarSessionRepository,
 )
@@ -54,6 +55,7 @@ class WeighingLidarCoordinator:
         self,
         buffer: LidarProfileBuffer = lidar_profile_buffer,
         repository: Optional[LidarSessionRepository] = None,
+        memory_repository: Optional[InMemoryLidarSessionRepository] = None,
         storage: AtomicLidarPassStorage = lidar_pass_storage,
         stable_confirm_samples: int = settings.SCALE_STABLE_CONFIRM_SAMPLES,
         post_stable_seconds: float = settings.LIDAR_POST_STABLE_SECONDS,
@@ -62,16 +64,23 @@ class WeighingLidarCoordinator:
     ):
         self.buffer = buffer
         self.repository = repository or SqlAlchemyLidarSessionRepository()
+        self.memory_repository = memory_repository or InMemoryLidarSessionRepository()
+        self.repository_mode = (
+            "sql" if isinstance(self.repository, SqlAlchemyLidarSessionRepository) else "memory"
+        )
         self.storage = storage
         self.stable_confirm_samples = stable_confirm_samples
         self.post_stable_seconds = post_stable_seconds
         self.empty_threshold_kg = empty_threshold_kg
         self.empty_confirm_samples = empty_confirm_samples
         self.active_session: Optional[ActiveLidarPass] = None
+        self.last_session: Optional[ActiveLidarPass] = None
         self.last_scale_snapshot: Optional[dict] = None
         self.scale_connected = False
-        self.persistence_available = True
-        self.persistence_error: Optional[str] = None
+        self.persistence_available = self.repository_mode == "sql"
+        self.persistence_error: Optional[str] = (
+            None if self.persistence_available else "SQL persistence is not configured"
+        )
         self._previous_state_name: Optional[str] = None
         self._stable_samples = 0
         self._empty_samples = 0
@@ -80,13 +89,35 @@ class WeighingLidarCoordinator:
         self._finish_task: Optional[asyncio.Task] = None
 
     async def check_persistence(self) -> bool:
+        if self.repository_mode == "memory":
+            return False
         try:
-            self.persistence_available = await asyncio.to_thread(self.repository.is_available)
-            self.persistence_error = None if self.persistence_available else "lidar_pass_sessions table is missing"
+            available = await asyncio.to_thread(self.repository.is_available)
+            if not available:
+                self._switch_to_memory("lidar_pass_sessions table is missing")
+            else:
+                self.persistence_available = True
+                self.persistence_error = None
         except Exception as exc:
-            self.persistence_available = False
-            self.persistence_error = f"{type(exc).__name__}: {exc}"
+            self._switch_to_memory(self._persistence_error(exc))
         return self.persistence_available
+
+    @staticmethod
+    def _persistence_error(exc: Exception) -> str:
+        message = str(exc).lower()
+        if "lidar_pass_sessions" in message and (
+            "does not exist" in message or "undefinedtable" in message
+        ):
+            return "lidar_pass_sessions table is missing"
+        return f"{type(exc).__name__}: {exc}"
+
+    def _switch_to_memory(self, error: str) -> None:
+        if self.repository_mode != "memory":
+            logger.warning("Switching lidar session repository to memory: %s", error)
+        self.repository = self.memory_repository
+        self.repository_mode = "memory"
+        self.persistence_available = False
+        self.persistence_error = error
 
     @staticmethod
     def _normalise_snapshot(data: dict) -> dict:
@@ -134,16 +165,21 @@ class WeighingLidarCoordinator:
         }
 
     async def _create_repository_record(self, session: ActiveLidarPass) -> None:
+        values = self._repository_values(session)
         try:
             session.repository_id = await asyncio.to_thread(
-                self.repository.create, self._repository_values(session)
+                self.repository.create, values
             )
-            self.persistence_available = True
-            self.persistence_error = None
+            if self.repository_mode == "sql":
+                self.persistence_available = True
+                self.persistence_error = None
         except Exception as exc:
-            self.persistence_available = False
-            self.persistence_error = f"{type(exc).__name__}: {exc}"
-            logger.error("Lidar session persistence unavailable: %s", self.persistence_error)
+            error = self._persistence_error(exc)
+            self._switch_to_memory(error)
+            session.repository_id = await asyncio.to_thread(
+                self.repository.create, values
+            )
+            logger.error("Lidar SQL persistence unavailable; session continues in memory: %s", error)
 
     async def _update_repository(self, session: ActiveLidarPass) -> None:
         if session.repository_id is None:
@@ -154,12 +190,15 @@ class WeighingLidarCoordinator:
                 session.repository_id,
                 self._repository_values(session),
             )
-            self.persistence_available = True
-            self.persistence_error = None
+            if self.repository_mode == "sql":
+                self.persistence_available = True
+                self.persistence_error = None
         except Exception as exc:
-            self.persistence_available = False
-            self.persistence_error = f"{type(exc).__name__}: {exc}"
-            logger.error("Failed to update lidar session metadata: %s", self.persistence_error)
+            error = self._persistence_error(exc)
+            values = self._repository_values(session)
+            self._switch_to_memory(error)
+            session.repository_id = await asyncio.to_thread(self.repository.create, values)
+            logger.error("Lidar SQL update failed; session copied to memory: %s", error)
 
     def _sync_profiles(self, session: ActiveLidarPass) -> None:
         if not session.recording:
@@ -208,6 +247,7 @@ class WeighingLidarCoordinator:
             await self._update_repository(session)
             return
 
+        session.status = "COMPLETED"
         metadata = self._repository_values(session)
         metadata.update({
             "session_key": session.session_key,
@@ -222,7 +262,6 @@ class WeighingLidarCoordinator:
                 metadata,
                 [profile.to_dict() for profile in session.profiles],
             )
-            session.status = "COMPLETED"
         except Exception as exc:
             session.status = "FAILED"
             session.error_message = f"json_write_failed:{type(exc).__name__}: {exc}"
@@ -291,6 +330,7 @@ class WeighingLidarCoordinator:
                         session.workflow_state = "COMPLETED"
                         session.state_timestamps["COMPLETED"] = now.isoformat()
                         await self._update_repository(session)
+                        self.last_session = session
                         self.active_session = None
                         self._stable_samples = 0
                         self._empty_samples = 0
@@ -331,10 +371,11 @@ class WeighingLidarCoordinator:
             "active_session": self.session_state(),
             "persistence_available": self.persistence_available,
             "persistence_error": self.persistence_error,
+            "repository_mode": self.repository_mode,
         }
 
     def session_state(self) -> Optional[dict]:
-        session = self.active_session
+        session = self.active_session or self.last_session
         if session is None:
             return None
         return {

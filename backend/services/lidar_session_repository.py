@@ -48,13 +48,17 @@ class InMemoryLidarSessionRepository:
 class SqlAlchemyLidarSessionRepository:
     """Metadata repository. Missing migration is reported to the coordinator."""
 
+    def __init__(self, session_factory=SessionLocal, bind=engine):
+        self.session_factory = session_factory
+        self.bind = bind
+
     def is_available(self) -> bool:
-        return inspect(engine).has_table("lidar_pass_sessions")
+        return inspect(self.bind).has_table("lidar_pass_sessions")
 
     def create(self, values: dict) -> int:
         from models import LidarPassSession
 
-        db = SessionLocal()
+        db = self.session_factory()
         try:
             record = LidarPassSession(**values)
             db.add(record)
@@ -72,7 +76,7 @@ class SqlAlchemyLidarSessionRepository:
             return
         from models import LidarPassSession
 
-        db = SessionLocal()
+        db = self.session_factory()
         try:
             record = db.query(LidarPassSession).filter(LidarPassSession.id == session_id).first()
             if record is None:

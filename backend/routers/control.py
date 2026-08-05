@@ -23,4 +23,5 @@ async def get_current_lidar_session():
         "session": weighing_lidar_coordinator.session_state(),
         "persistence_available": weighing_lidar_coordinator.persistence_available,
         "persistence_error": weighing_lidar_coordinator.persistence_error,
+        "repository_mode": getattr(weighing_lidar_coordinator, "repository_mode", "unknown"),
     }
