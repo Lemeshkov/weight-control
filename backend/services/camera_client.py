@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Optional, Dict, Any
 from datetime import datetime
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 import requests
 from requests.auth import HTTPDigestAuth
 import numpy as np
@@ -39,7 +39,10 @@ class CameraClient:
         self.rtsp_path = rtsp_path
         self.cap: Optional[cv2.VideoCapture] = None if not CV2_AVAILABLE else None
         self.is_connected = False
-        self.current_frame: Optional[np.ndarray] = None
+        self._frame_lock = Lock()
+        self._current_jpeg: Optional[bytes] = None
+        self._frame_width = 0
+        self._frame_height = 0
         self.frame_timestamp: Optional[datetime] = None
         self._stop_event = Event()
         self._capture_thread: Optional[Thread] = None
@@ -48,6 +51,31 @@ class CameraClient:
         self._http = requests.Session()
         # The camera is on the LAN; environment proxies can intercept local requests.
         self._http.trust_env = False
+
+    def _publish_frame(self, frame: np.ndarray) -> bool:
+        """Encode once in the capture thread and publish the latest JPEG."""
+        try:
+            if frame is None or frame.size == 0:
+                return False
+            if frame.shape[1] > 1024:
+                scale = 1024 / frame.shape[1]
+                frame = cv2.resize(frame, (1024, int(frame.shape[0] * scale)))
+            ok, buffer = cv2.imencode(
+                ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70]
+            )
+            if not ok:
+                return False
+            jpeg = buffer.tobytes()
+            captured_at = datetime.now()
+            with self._frame_lock:
+                self._current_jpeg = jpeg
+                self._frame_width = int(frame.shape[1])
+                self._frame_height = int(frame.shape[0])
+                self.frame_timestamp = captured_at
+            return True
+        except Exception as exc:
+            logger.warning("Camera frame encode failed: %s", type(exc).__name__)
+            return False
 
     def _get_stream_url(self) -> str:
         """Формирует URL для потока"""
@@ -115,8 +143,7 @@ class CameraClient:
                 if snapshot:
                     frame = cv2.imdecode(np.frombuffer(snapshot, np.uint8), cv2.IMREAD_COLOR)
                     if frame is not None:
-                        self.current_frame = frame
-                        self.frame_timestamp = datetime.now()
+                        self._publish_frame(frame)
                         self.is_connected = True
                         self._snapshot_mode = True
                         self._stop_event.clear()
@@ -153,8 +180,7 @@ class CameraClient:
                         for _ in range(5):
                             ret, frame = self.cap.read()
                             if ret and frame is not None:
-                                self.current_frame = frame
-                                self.frame_timestamp = datetime.now()
+                                self._publish_frame(frame)
                                 logger.info(f"✅ Подключено через: {url[:60]}")
                                 break
                         else:
@@ -207,8 +233,7 @@ class CameraClient:
                         nparr = np.frombuffer(img_bytes, np.uint8)
                         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         if frame is not None:
-                            self.current_frame = frame
-                            self.frame_timestamp = datetime.now()
+                            self._publish_frame(frame)
                             self._error_count = 0
                             self.is_connected = True
                             time.sleep(0.2)
@@ -225,8 +250,7 @@ class CameraClient:
                     try:
                         ret, frame = self.cap.read()
                         if ret and frame is not None:
-                            self.current_frame = frame
-                            self.frame_timestamp = datetime.now()
+                            self._publish_frame(frame)
                             self._error_count = 0
                             time.sleep(0.05)
                         else:
@@ -259,40 +283,20 @@ class CameraClient:
         if not CV2_AVAILABLE or not self.is_connected:
             return None
 
-        frame = self.current_frame
-        if frame is None:
-            return None
-
-        try:
-            frame_copy = frame.copy()
-
-            # ⭐ ПРОВЕРКА ЧТО ФРЕЙМ ВАЛИДНЫЙ
-            if frame_copy is None or frame_copy.size == 0:
-                logger.warning("⚠️ Пустой кадр")
+        with self._frame_lock:
+            if self._current_jpeg is None:
                 return None
-
-            if frame_copy.shape[1] > 1024:
-                scale = 1024 / frame_copy.shape[1]
-                new_width = int(frame_copy.shape[1] * scale)
-                new_height = int(frame_copy.shape[0] * scale)
-                frame_copy = cv2.resize(frame_copy, (new_width, new_height))
-
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 70]
-            _, buffer = cv2.imencode('.jpg', frame_copy, encode_param)
-            jpeg_bytes = buffer.tobytes()
-
-            return {
-                "timestamp": self.frame_timestamp.isoformat() if self.frame_timestamp else datetime.now().isoformat(),
-                "data": jpeg_bytes,
-                "size": len(jpeg_bytes),
-                "width": frame_copy.shape[1],
-                "height": frame_copy.shape[0]
-            }
-        except Exception as e:
-            # ⭐ ЛОВИМ ОШИБКИ ПРИ ОБРАБОТКЕ КАДРА
-            logger.warning(f"⚠️ Ошибка получения кадра: {e}")
-            self._error_count += 1
-            return None
+            jpeg_bytes = self._current_jpeg
+            width = self._frame_width
+            height = self._frame_height
+            timestamp = self.frame_timestamp
+        return {
+            "timestamp": timestamp.isoformat() if timestamp else datetime.now().isoformat(),
+            "data": jpeg_bytes,
+            "size": len(jpeg_bytes),
+            "width": width,
+            "height": height,
+        }
 
     def disconnect(self):
         """Отключение от камеры"""
@@ -301,5 +305,7 @@ class CameraClient:
             self._capture_thread.join(timeout=2)
         if self.cap:
             self.cap.release()
+        with self._frame_lock:
+            self._current_jpeg = None
         self.is_connected = False
         logger.info("🔌 Камера отключена")

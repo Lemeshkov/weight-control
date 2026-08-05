@@ -1937,6 +1937,7 @@ const LidarViewer: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showCamera, setShowCamera] = useState(true);
+  const [cameraStreamFailed, setCameraStreamFailed] = useState(false);
   const [measurements, setMeasurements] = useState<SavedMeasurement[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -2021,10 +2022,9 @@ const LidarViewer: React.FC = () => {
 
   const fetchCameraStatus = async () => {
     try {
-      const response = await axios.get(
-        "http://localhost:8000/api/camera/status",
-      );
+      const response = await axios.get("/api/camera/status");
       setCameraStatus(response.data);
+      if (response.data.connected) setCameraStreamFailed(false);
     } catch (err) {
       console.error("Error fetching camera status:", err);
     }
@@ -2593,9 +2593,11 @@ const LidarViewer: React.FC = () => {
     const autoRefreshInterval = setInterval(() => {
       fetchLidarData();
     }, 2000);
+    const cameraStatusInterval = setInterval(fetchCameraStatus, 10000);
 
     return () => {
       clearInterval(autoRefreshInterval);
+      clearInterval(cameraStatusInterval);
     };
   }, []);
 
@@ -2665,7 +2667,10 @@ const LidarViewer: React.FC = () => {
             <input
               type="checkbox"
               checked={showCamera}
-              onChange={(e) => setShowCamera(e.target.checked)}
+              onChange={(e) => {
+                setShowCamera(e.target.checked);
+                setCameraStreamFailed(false);
+              }}
             />
             📷
           </label>
@@ -3204,8 +3209,10 @@ const LidarViewer: React.FC = () => {
               <h3 style={{ margin: 0, marginBottom: "10px", fontSize: "16px" }}>
                 📷 Контроль качества
               </h3>
+              {!cameraStreamFailed ? (
               <img
-                src="http://localhost:8000/api/camera/stream"
+                src="/api/camera/stream"
+                onError={() => setCameraStreamFailed(true)}
                 alt="Непрерывная трансляция камеры"
                 style={{
                   width: "100%",
@@ -3215,7 +3222,13 @@ const LidarViewer: React.FC = () => {
                   borderRadius: "4px",
                   border: "1px solid #ddd",
                 }}
-              />              <div
+              />
+              ) : (
+                <div style={{ minHeight: "240px", display: "grid", placeItems: "center", background: "#111", color: "#ddd", borderRadius: "4px" }}>
+                  Camera temporarily unavailable
+                </div>
+              )}
+              <div
                 style={{
                   fontSize: "12px",
                   color: "#888",

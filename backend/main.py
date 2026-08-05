@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 #_------------------------------------------------------------------------------
 
 # Отключаем логи для модуля camera
-logging.getLogger("routers.camera").setLevel(logging.ERROR)
-logging.getLogger("services.camera_client").setLevel(logging.ERROR)
+logging.getLogger("routers.camera").setLevel(logging.INFO)
+logging.getLogger("services.camera_client").setLevel(logging.INFO)
 # Отключаем логи uniserver_client (ваш случай)
 logging.getLogger("services.uniserver_client").setLevel(logging.ERROR)
 
