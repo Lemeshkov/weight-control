@@ -83,6 +83,9 @@ class WeighingLidarCoordinator:
         )
         self._previous_state_name: Optional[str] = None
         self._stable_samples = 0
+        self._last_stable_reset_reason: Optional[str] = None
+        self._last_stable_sample_at: Optional[datetime] = None
+        self._last_logged_fsm: Optional[tuple] = None
         self._empty_samples = 0
         self._seen_unload = False
         self._lock = asyncio.Lock()
@@ -208,6 +211,36 @@ class WeighingLidarCoordinator:
             session.profiles.extend(new_profiles)
             session.last_sequence_number = new_profiles[-1].sequence_number
 
+    def _log_fsm(self, session: ActiveLidarPass, snapshot: dict) -> None:
+        values = (
+            session.session_key,
+            snapshot["state_name"],
+            snapshot["massa"],
+            snapshot["stabil"],
+            self._stable_samples,
+        )
+        if values == self._last_logged_fsm:
+            return
+        logger.info(
+            "SCALE_FSM session=%s state=%s massa=%s stabil=%s stable_count=%s/%s",
+            session.session_key,
+            snapshot["state_name"],
+            snapshot["massa"],
+            snapshot["stabil"],
+            self._stable_samples,
+            self.stable_confirm_samples,
+        )
+        self._last_logged_fsm = values
+
+    def _reset_stable_counter(
+        self, reason: str, session: ActiveLidarPass, snapshot: dict
+    ) -> None:
+        self._stable_samples = 0
+        self._last_stable_reset_reason = reason
+        logger.info(
+            "stable counter reset session=%s reason=%s", session.session_key, reason
+        )
+        self._log_fsm(session, snapshot)
     async def _open_session(self, snapshot: dict, now: datetime) -> None:
         if self.active_session is not None:
             return
@@ -228,6 +261,8 @@ class WeighingLidarCoordinator:
             state_timestamps={"ENTERING_AND_SCANNING": now.isoformat()},
         )
         self.active_session = session
+        self._last_logged_fsm = None
+        self._reset_stable_counter("new_session", session, snapshot)
         await self._create_repository_record(session)
 
     async def _finish_after_delay(self, session_key: str) -> None:
@@ -300,6 +335,8 @@ class WeighingLidarCoordinator:
 
             session = self.active_session
             if session is not None:
+                self._last_stable_sample_at = now
+                self._log_fsm(session, snapshot)
                 self._sync_profiles(session)
                 session.maximum_observed_weight_kg = max(
                     session.maximum_observed_weight_kg, snapshot["massa"]
@@ -318,6 +355,18 @@ class WeighingLidarCoordinator:
                     session.state_timestamps[workflow_state] = now.isoformat()
 
                 if state_name in {"ReadyWeighing", "WeighingComplete"} and session.recording:
+                    reset_reason = (
+                        "ready_weighing" if state_name == "ReadyWeighing" else "weighing_complete"
+                    )
+                    if session.stable_weight_at is None:
+                        logger.warning(
+                            "fallback finalize without stable weight session=%s state=%s stable_count=%s/%s",
+                            session.session_key,
+                            state_name,
+                            self._stable_samples,
+                            self.stable_confirm_samples,
+                        )
+                    self._reset_stable_counter(reset_reason, session, snapshot)
                     await self._finalize_active_session(
                         session, reason="stable_weight_missing" if session.stable_weight_at is None else None
                     )
@@ -326,17 +375,34 @@ class WeighingLidarCoordinator:
 
                 if state_name == "Weighing" and snapshot["stabil"] and session.stable_weight_at is None:
                     self._stable_samples += 1
+                    logger.info(
+                        "stable counter increment session=%s stable_count=%s/%s",
+                        session.session_key,
+                        self._stable_samples,
+                        self.stable_confirm_samples,
+                    )
+                    self._log_fsm(session, snapshot)
                     if self._stable_samples >= self.stable_confirm_samples:
                         session.stable_weight_at = now
                         session.stable_weight_kg = snapshot["massa"]
                         session.workflow_state = "WEIGHT_CAPTURED"
                         session.state_timestamps["WEIGHT_CAPTURED"] = now.isoformat()
+                        logger.info(
+                            "stable weight confirmed session=%s massa=%s stable_count=%s/%s",
+                            session.session_key,
+                            snapshot["massa"],
+                            self._stable_samples,
+                            self.stable_confirm_samples,
+                        )
                         self._finish_task = asyncio.create_task(
                             self._finish_after_delay(session.session_key),
                             name="lidar-post-stable-finish",
                         )
                 elif session.stable_weight_at is None:
-                    self._stable_samples = 0
+                    reset_reason = (
+                        "stabil_false" if state_name == "Weighing" else "state_not_weighing"
+                    )
+                    self._reset_stable_counter(reset_reason, session, snapshot)
 
                 if state_name == "UnLoadScale":
                     self._seen_unload = True
@@ -347,6 +413,12 @@ class WeighingLidarCoordinator:
                 ):
                     self._empty_samples += 1
                     if self._empty_samples >= self.empty_confirm_samples:
+                        if session.stable_weight_at is None:
+                            logger.warning(
+                                "fallback finalize without stable weight session=%s state=%s stable_count=%s/%s",
+                                session.session_key, state_name, self._stable_samples, self.stable_confirm_samples,
+                            )
+                        self._reset_stable_counter("empty", session, snapshot)
                         await self._finalize_active_session(
                             session,
                             reason="Session ended without stable weight"
@@ -387,6 +459,14 @@ class WeighingLidarCoordinator:
                 "session_profiles": len(session.profiles) if session else 0,
             },
             "active_session": self._session_state(self.active_session),
+            "stable_confirmation": {
+                "current_count": self._stable_samples,
+                "required_count": self.stable_confirm_samples,
+                "last_reset_reason": self._last_stable_reset_reason,
+                "last_sample_at": self._last_stable_sample_at.isoformat()
+                if self._last_stable_sample_at
+                else None,
+            },
             "persistence_available": self.persistence_available,
             "persistence_error": self.persistence_error,
             "repository_mode": self.repository_mode,
