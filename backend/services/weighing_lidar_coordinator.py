@@ -237,36 +237,51 @@ class WeighingLidarCoordinator:
             if session is None or session.session_key != session_key or not session.recording:
                 return
             self._sync_profiles(session)
-            await self._finalise_recording(session)
+            await self._finalize_active_session(session)
 
-    async def _finalise_recording(self, session: ActiveLidarPass) -> None:
-        session.ended_at = utc_now()
+    async def _finalize_active_session(
+        self, session: ActiveLidarPass, *, reason: Optional[str] = None
+    ) -> None:
+        """Finish, persist and detach a pass exactly once. Caller holds ``_lock``."""
+        if not session.recording or self.active_session is not session:
+            return
+        self._sync_profiles(session)
+        finished_at = utc_now()
+        session.ended_at = finished_at
+        session.completed_at = finished_at
+        session.workflow_state = "COMPLETED"
+        session.state_timestamps["COMPLETED"] = finished_at.isoformat()
         if not session.profiles:
             session.status = "FAILED"
-            session.error_message = self.buffer.last_error or "lidar_profiles_unavailable"
+            session.error_message = reason or self.buffer.last_error or "lidar_profiles_unavailable"
             await self._update_repository(session)
-            return
-
-        session.status = "COMPLETED"
-        metadata = self._repository_values(session)
-        metadata.update({
-            "session_key": session.session_key,
-            "started_at": session.started_at.isoformat(),
-            "load_scale_at": session.load_scale_at.isoformat(),
-            "stable_weight_at": session.stable_weight_at.isoformat() if session.stable_weight_at else None,
-            "ended_at": session.ended_at.isoformat(),
-        })
-        try:
-            session.data_file_path = await asyncio.to_thread(
-                self.storage.save,
-                metadata,
-                [profile.to_dict() for profile in session.profiles],
-            )
-        except Exception as exc:
-            session.status = "FAILED"
-            session.error_message = f"json_write_failed:{type(exc).__name__}: {exc}"
-        await self._update_repository(session)
-
+        else:
+            session.status = "COMPLETED"
+            if session.stable_weight_at is None:
+                session.stable_weight_kg = session.maximum_observed_weight_kg
+                session.error_message = reason or "stable_weight_missing"
+            metadata = self._repository_values(session)
+            metadata.update({
+                "session_key": session.session_key,
+                "started_at": session.started_at.isoformat(),
+                "load_scale_at": session.load_scale_at.isoformat(),
+                "stable_weight_at": session.stable_weight_at.isoformat() if session.stable_weight_at else None,
+                "ended_at": session.ended_at.isoformat(),
+                "completed_at": session.completed_at.isoformat(),
+            })
+            try:
+                session.data_file_path = await asyncio.to_thread(
+                    self.storage.save, metadata, [profile.to_dict() for profile in session.profiles]
+                )
+            except Exception as exc:
+                session.status = "FAILED"
+                session.error_message = f"json_write_failed:{type(exc).__name__}: {exc}"
+            await self._update_repository(session)
+        self.last_session = session
+        self.active_session = None
+        self._stable_samples = 0
+        self._empty_samples = 0
+        self._seen_unload = False
     async def on_scale_unavailable(self) -> None:
         async with self._lock:
             self.scale_connected = False
@@ -302,6 +317,13 @@ class WeighingLidarCoordinator:
                     session.workflow_state = workflow_state
                     session.state_timestamps[workflow_state] = now.isoformat()
 
+                if state_name in {"ReadyWeighing", "WeighingComplete"} and session.recording:
+                    await self._finalize_active_session(
+                        session, reason="stable_weight_missing" if session.stable_weight_at is None else None
+                    )
+                    self._previous_state_name = state_name
+                    return
+
                 if state_name == "Weighing" and snapshot["stabil"] and session.stable_weight_at is None:
                     self._stable_samples += 1
                     if self._stable_samples >= self.stable_confirm_samples:
@@ -319,22 +341,18 @@ class WeighingLidarCoordinator:
                 if state_name == "UnLoadScale":
                     self._seen_unload = True
                 if (
-                    self._seen_unload
-                    and state_name == "Empty"
+                    state_name == "Empty"
                     and snapshot["stabil"]
                     and snapshot["massa"] <= self.empty_threshold_kg
                 ):
                     self._empty_samples += 1
                     if self._empty_samples >= self.empty_confirm_samples:
-                        session.completed_at = now
-                        session.workflow_state = "COMPLETED"
-                        session.state_timestamps["COMPLETED"] = now.isoformat()
-                        await self._update_repository(session)
-                        self.last_session = session
-                        self.active_session = None
-                        self._stable_samples = 0
-                        self._empty_samples = 0
-                        self._seen_unload = False
+                        await self._finalize_active_session(
+                            session,
+                            reason="Session ended without stable weight"
+                            if session.stable_weight_at is None and not session.profiles
+                            else None,
+                        )
                 else:
                     self._empty_samples = 0
 
@@ -342,7 +360,7 @@ class WeighingLidarCoordinator:
 
     async def bind_trip(self, trip_id: int) -> bool:
         async with self._lock:
-            session = self.active_session
+            session = self.active_session or self.last_session
             if session is None:
                 return False
             if session.trip_id == trip_id:
@@ -368,14 +386,17 @@ class WeighingLidarCoordinator:
                 "recording": bool(session and session.recording),
                 "session_profiles": len(session.profiles) if session else 0,
             },
-            "active_session": self.session_state(),
+            "active_session": self._session_state(self.active_session),
             "persistence_available": self.persistence_available,
             "persistence_error": self.persistence_error,
             "repository_mode": self.repository_mode,
         }
 
     def session_state(self) -> Optional[dict]:
-        session = self.active_session or self.last_session
+        return self._session_state(self.active_session or self.last_session)
+
+    @staticmethod
+    def _session_state(session: Optional[ActiveLidarPass]) -> Optional[dict]:
         if session is None:
             return None
         return {

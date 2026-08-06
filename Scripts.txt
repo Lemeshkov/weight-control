@@ -69,3 +69,5 @@ git push origin main
 
 # 3. Вернуться в develop
 git checkout develop
+
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --env-file .env

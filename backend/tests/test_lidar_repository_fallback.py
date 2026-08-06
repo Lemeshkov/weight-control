@@ -146,8 +146,8 @@ def test_stable_weight_completes_session_in_memory_mode(tmp_path):
         await coordinator._finish_task
 
     asyncio.run(scenario())
-    assert coordinator.active_session.status == "COMPLETED"
-    assert coordinator.active_session.stable_weight_kg == 31520
+    assert coordinator.last_session.status == "COMPLETED"
+    assert coordinator.last_session.stable_weight_kg == 31520
 
 
 def test_json_is_created_without_postgresql_table(tmp_path):
@@ -161,7 +161,7 @@ def test_json_is_created_without_postgresql_table(tmp_path):
         await coordinator._finish_task
 
     asyncio.run(scenario())
-    path = coordinator.active_session.data_file_path
+    path = coordinator.last_session.data_file_path
     assert path is not None
     with open(path, encoding="utf-8") as saved:
         payload = json.load(saved)

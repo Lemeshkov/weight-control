@@ -78,7 +78,8 @@ def test_stable_weight_requires_confirmations_and_closes_after_delay(tmp_path):
 
     asyncio.run(scenario())
 
-    session = coordinator.active_session
+    session = coordinator.last_session
+    assert coordinator.active_session is None
     assert session.status == "COMPLETED"
     assert session.ended_at is not None
     assert session.stable_weight_kg == 1500
@@ -130,9 +131,9 @@ def test_missing_lidar_profiles_does_not_raise_in_scale_flow(tmp_path):
         await coordinator._finish_task
 
     asyncio.run(scenario())
-    assert coordinator.active_session.trip_id == 7
-    assert coordinator.active_session.status == "FAILED"
-    assert coordinator.active_session.error_message == "lidar_profiles_unavailable"
+    assert coordinator.last_session.trip_id == 7
+    assert coordinator.last_session.status == "FAILED"
+    assert coordinator.last_session.error_message == "lidar_profiles_unavailable"
 
 
 def test_json_write_error_marks_session_failed(tmp_path):
@@ -150,5 +151,63 @@ def test_json_write_error_marks_session_failed(tmp_path):
         await coordinator._finish_task
 
     asyncio.run(scenario())
-    assert coordinator.active_session.status == "FAILED"
-    assert coordinator.active_session.error_message.startswith("json_write_failed:OSError")
+    assert coordinator.last_session.status == "FAILED"
+    assert coordinator.last_session.error_message.startswith("json_write_failed:OSError")
+
+
+def test_ready_without_stable_finalizes_with_diagnostic_weight(tmp_path):
+    coordinator, buffer, _ = make_coordinator(tmp_path)
+    buffer.add_profile([100], captured_at=datetime.now(timezone.utc))
+
+    async def scenario():
+        await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        await coordinator.on_scale_snapshot(snapshot("Weighing", 1800, False))
+        await coordinator.on_scale_snapshot(snapshot("ReadyWeighing", 1750, False))
+
+    asyncio.run(scenario())
+    session = coordinator.last_session
+    assert coordinator.active_session is None
+    assert session.status == "COMPLETED"
+    assert session.workflow_state == "COMPLETED"
+    assert session.stable_weight_at is None
+    assert session.stable_weight_kg == 1800
+    assert session.error_message == "stable_weight_missing"
+    assert session.ended_at is not None
+    assert session.completed_at is not None
+    assert session.data_file_path
+
+
+def test_empty_fallback_is_idempotent_and_current_has_no_active_session(tmp_path):
+    coordinator, buffer, _ = make_coordinator(tmp_path)
+    buffer.add_profile([100], captured_at=datetime.now(timezone.utc))
+
+    async def scenario():
+        await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        await coordinator.on_scale_snapshot(snapshot("UnLoadScale", 100, False))
+        await coordinator.on_scale_snapshot(snapshot("Empty", 0, True))
+        first_path = coordinator.last_session.data_file_path
+        await coordinator.on_scale_snapshot(snapshot("Empty", 0, True))
+        return first_path
+
+    first_path = asyncio.run(scenario())
+    assert coordinator.current_state()["active_session"] is None
+    assert coordinator.session_state()["status"] == "COMPLETED"
+    assert coordinator.session_state()["data_file_path"] == first_path
+    assert len(list(tmp_path.glob("lidar_pass_*.json"))) == 1
+
+
+def test_profiles_are_not_added_after_finalize(tmp_path):
+    coordinator, buffer, _ = make_coordinator(tmp_path, stable_samples=1, post_delay=0)
+    buffer.add_profile([100], captured_at=datetime.now(timezone.utc))
+
+    async def scenario():
+        await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        await coordinator.on_scale_snapshot(snapshot("Weighing", 1000, True))
+        await coordinator._finish_task
+        count = len(coordinator.last_session.profiles)
+        buffer.add_profile([200], captured_at=datetime.now(timezone.utc))
+        await coordinator.on_scale_snapshot(snapshot("Empty", 0, True))
+        return count
+
+    count = asyncio.run(scenario())
+    assert len(coordinator.last_session.profiles) == count
