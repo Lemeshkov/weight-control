@@ -145,6 +145,9 @@ class TripCRUD:
     @staticmethod
     async def create_from_weighing(db: Session, weighing_data: dict) -> models.Trip:
         """Создать рейс из данных взвешивания"""
+        from services.weighing_lidar_coordinator import weighing_lidar_coordinator
+
+        pass_token = weighing_lidar_coordinator.current_pass_token()
     
         plate_number = weighing_data.get("plate_number", "")
         weight = weighing_data.get("weight", 0)
@@ -171,6 +174,7 @@ class TripCRUD:
         
             if existing:
                 logger.info(f"ℹ️ Рейс с кодом {doc_id} уже существует (ID: {existing.id})")
+                await weighing_lidar_coordinator.bind_trip(existing.id, pass_token)
                 return existing
     
     # Создать рейс
@@ -203,8 +207,7 @@ class TripCRUD:
     
         db.commit()
         db.refresh(trip)
-        from services.weighing_lidar_coordinator import weighing_lidar_coordinator
-        await weighing_lidar_coordinator.bind_trip(trip.id)
+        await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
         return trip
     
     # @staticmethod

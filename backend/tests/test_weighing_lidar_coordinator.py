@@ -111,9 +111,10 @@ def test_trip_binding_is_idempotent(tmp_path):
 
     async def scenario():
         await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
-        assert await coordinator.bind_trip(42) is True
-        assert await coordinator.bind_trip(42) is True
-        assert await coordinator.bind_trip(43) is False
+        pass_token = coordinator.current_pass_token()
+        assert await coordinator.bind_trip(42, pass_token) is True
+        assert await coordinator.bind_trip(42, pass_token) is True
+        assert await coordinator.bind_trip(43, pass_token) is False
 
     asyncio.run(scenario())
     session = coordinator.active_session
@@ -126,8 +127,9 @@ def test_missing_lidar_profiles_does_not_raise_in_scale_flow(tmp_path):
 
     async def scenario():
         await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        pass_token = coordinator.current_pass_token()
         await coordinator.on_scale_snapshot(snapshot("Weighing", 1000, True))
-        assert await coordinator.bind_trip(7) is True
+        assert await coordinator.bind_trip(7, pass_token) is True
         await coordinator._finish_task
 
     asyncio.run(scenario())
@@ -147,6 +149,7 @@ def test_json_write_error_marks_session_failed(tmp_path):
 
     async def scenario():
         await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        pass_token = coordinator.current_pass_token()
         await coordinator.on_scale_snapshot(snapshot("Weighing", 1000, True))
         await coordinator._finish_task
 
@@ -202,6 +205,7 @@ def test_profiles_are_not_added_after_finalize(tmp_path):
 
     async def scenario():
         await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        pass_token = coordinator.current_pass_token()
         await coordinator.on_scale_snapshot(snapshot("Weighing", 1000, True))
         await coordinator._finish_task
         count = len(coordinator.last_session.profiles)
@@ -302,3 +306,56 @@ def test_stable_confirm_samples_is_read_from_environment(monkeypatch):
         text=True,
     )
     assert result.stdout.strip() == "7"
+
+def test_late_bind_completed_session_uses_same_lifecycle_token(tmp_path):
+    coordinator, buffer, repository = make_coordinator(
+        tmp_path, stable_samples=1, post_delay=0.01
+    )
+    buffer.add_profile([100], captured_at=datetime.now(timezone.utc))
+
+    async def scenario():
+        await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        pass_token = coordinator.current_pass_token()
+        await coordinator.on_scale_snapshot(snapshot("Weighing", 1000, True))
+        await coordinator._finish_task
+        assert coordinator.active_session is None
+        assert coordinator.last_session.status == "COMPLETED"
+        assert await coordinator.bind_trip(8, pass_token) is True
+
+    asyncio.run(scenario())
+    assert coordinator.last_session.trip_id == 8
+    assert repository.get(coordinator.last_session.repository_id)["trip_id"] == 8
+
+
+def test_new_pass_rejects_stale_callback_and_does_not_rebind(tmp_path):
+    coordinator, buffer, _ = make_coordinator(tmp_path)
+    buffer.add_profile([100], captured_at=datetime.now(timezone.utc))
+
+    async def scenario():
+        await coordinator.on_scale_snapshot(snapshot("LoadScale", 500, False))
+        first_token = coordinator.current_pass_token()
+        assert await coordinator.bind_trip(7, first_token) is True
+        await coordinator.on_scale_snapshot(snapshot("Empty", 0, True))
+        await coordinator.on_scale_snapshot(snapshot("LoadScale", 600, False))
+        second_token = coordinator.current_pass_token()
+        assert second_token != first_token
+        assert await coordinator.bind_trip(8, first_token) is False
+        assert coordinator.active_session.trip_id is None
+        assert await coordinator.bind_trip(8, second_token) is True
+        assert await coordinator.bind_trip(9, second_token) is False
+
+    asyncio.run(scenario())
+    assert coordinator.last_session.trip_id == 7
+    assert coordinator.active_session.trip_id == 8
+
+
+def test_restart_cannot_claim_repository_session_without_lifecycle_token(tmp_path):
+    coordinator, _, _ = make_coordinator(tmp_path)
+
+    async def scenario():
+        assert coordinator.current_pass_token() is None
+        assert await coordinator.bind_trip(8, None) is False
+
+    asyncio.run(scenario())
+    assert coordinator.active_session is None
+    assert coordinator.last_session is None

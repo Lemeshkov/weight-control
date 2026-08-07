@@ -17,6 +17,9 @@ def test_scale_monitor_forwards_identical_snapshots(monkeypatch):
         return data
 
     class CoordinatorSpy:
+        def current_pass_token(self):
+            return None
+
         async def on_scale_snapshot(self, value):
             calls.append(value)
 
@@ -40,3 +43,74 @@ def test_scale_monitor_forwards_identical_snapshots(monkeypatch):
 
     asyncio.run(scenario())
     assert calls == [data, data, data]
+
+def test_new_entry_does_not_reuse_old_active_trip(monkeypatch):
+    old_trip = scale_monitor_module.models.Trip(
+        id=7,
+        vehicle_id=1,
+        status=scale_monitor_module.models.TripStatus.ENTRY,
+    )
+    added = []
+
+    class FakeDb:
+        def add(self, value):
+            added.append(value)
+
+        def flush(self):
+            trip = next(
+                value
+                for value in added
+                if isinstance(value, scale_monitor_module.models.Trip)
+            )
+            trip.id = 8
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            raise AssertionError("entry creation unexpectedly rolled back")
+
+        def close(self):
+            return None
+
+    class CoordinatorSpy:
+        def bound_trip_id(self, pass_token):
+            assert pass_token == "new-pass"
+            return None
+
+        async def bind_trip(self, trip_id, pass_token):
+            assert (trip_id, pass_token) == (8, "new-pass")
+            return True
+
+    monkeypatch.setattr(scale_monitor_module, "SessionLocal", FakeDb)
+    monkeypatch.setattr(
+        scale_monitor_module.VehicleCRUD,
+        "get_or_create_by_plate",
+        lambda db, plate: type("Vehicle", (), {"id": 1})(),
+    )
+    monkeypatch.setattr(
+        scale_monitor_module.TripCRUD,
+        "get_trip_by_vehicle_and_status",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("old active trip lookup must not be used for entry")
+        ),
+    )
+    monkeypatch.setattr(
+        scale_monitor_module, "weighing_lidar_coordinator", CoordinatorSpy()
+    )
+
+    asyncio.run(
+        scale_monitor_module.ScaleMonitor()._handle_entry(
+            "A001AA", 4850, {"doc_id": ""}, "new-pass"
+        )
+    )
+
+    new_trip = next(
+        value
+        for value in added
+        if isinstance(value, scale_monitor_module.models.Trip)
+    )
+    assert new_trip.id == 8
+    assert new_trip.status == scale_monitor_module.models.TripStatus.ENTRY
+    assert old_trip.id == 7
+    assert old_trip.status == scale_monitor_module.models.TripStatus.ENTRY

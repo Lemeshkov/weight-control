@@ -211,11 +211,6 @@ async def start_weighing(background_tasks: BackgroundTasks, db: Session = Depend
         raise HTTPException(status_code=400, detail="Нулевой вес")
     
     vehicle = VehicleCRUD.get_or_create_by_plate(db, data['plate_number'])
-    active_trip = TripCRUD.get_trip_by_vehicle_and_status(db, vehicle.id, models.TripStatus.ENTRY)
-    
-    if active_trip:
-        raise HTTPException(status_code=400, detail=f"Активный рейс уже существует")
-    
     trip = await TripCRUD.create_from_weighing(db, data)
     logger.info(f"Started new trip {trip.id} for vehicle {data['plate_number']}")
     

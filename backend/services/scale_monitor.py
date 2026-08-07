@@ -57,6 +57,7 @@ class ScaleMonitor:
                 return
 
             await weighing_lidar_coordinator.on_scale_snapshot(data)
+            pass_token = weighing_lidar_coordinator.current_pass_token()
             
             plate_number = data.get('plate_number', '')
             weight = data.get('weight', 0)
@@ -70,42 +71,63 @@ class ScaleMonitor:
                 return
             
             key = f"{plate_number}_{weight_type}"
-            current_state = {"weight": weight, "is_stable": is_stable}
+            current_state = {
+                "weight": weight,
+                "is_stable": is_stable,
+                "pass_token": pass_token,
+            }
             
             if key in self.last_state:
                 last = self.last_state[key]
-                if last["weight"] == weight and last["is_stable"] == is_stable:
+                if (
+                    last["weight"] == weight
+                    and last["is_stable"] == is_stable
+                    and last.get("pass_token") == pass_token
+                ):
                     return
             
             self.last_state[key] = current_state
             
             if is_stable and weight_type in ["БРУТТО", "BRUTTO", "GROSS"]:
-                await self._handle_entry(plate_number, weight, data)
+                await self._handle_entry(plate_number, weight, data, pass_token)
             elif is_stable and weight_type in ["ТАРА", "TARE", "NET"]:
                 await self._handle_exit(plate_number, weight, data)
             
         except Exception as e:
             logger.error(f"❌ Ошибка проверки весов: {e}")
     
-    async def _handle_entry(self, plate_number: str, weight: float, data: dict):
+    async def _handle_entry(
+        self, plate_number: str, weight: float, data: dict, pass_token: Optional[str]
+    ):
         """Обработка въезда"""
         db = SessionLocal()
         try:
             vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
             
-            active_trip = TripCRUD.get_trip_by_vehicle_and_status(
-                db, vehicle.id, models.TripStatus.ENTRY
-            )
-            
-            if active_trip:
-                logger.info(f"ℹ️ Уже есть активный рейс {active_trip.id} для {plate_number}")
-                await weighing_lidar_coordinator.bind_trip(active_trip.id)
+            bound_trip_id = weighing_lidar_coordinator.bound_trip_id(pass_token)
+            if bound_trip_id is not None:
+                logger.info(
+                    "Official weighing already belongs to current lidar lifecycle: session=%s trip_id=%s",
+                    pass_token,
+                    bound_trip_id,
+                )
                 return
-            
+
+            doc_id = str(data.get("doc_id") or "").strip()
+            if doc_id:
+                existing_by_code = db.query(models.Trip).filter(
+                    models.Trip.uniserver_code == doc_id
+                ).first()
+                if existing_by_code is not None:
+                    await weighing_lidar_coordinator.bind_trip(
+                        existing_by_code.id, pass_token
+                    )
+                    return
             trip = models.Trip(
                 vehicle_id=vehicle.id,
                 entry_time=datetime.now(),
-                status=models.TripStatus.ENTRY
+                status=models.TripStatus.ENTRY,
+                uniserver_code=doc_id or None,
             )
             db.add(trip)
             db.flush()
@@ -117,7 +139,7 @@ class ScaleMonitor:
             db.add(entry)
             
             db.commit()
-            await weighing_lidar_coordinator.bind_trip(trip.id)
+            await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
             logger.info(f"🚛 ✅ СОЗДАН РЕЙС {trip.id} для {plate_number}, вес {weight} кг")
             
         except Exception as e:

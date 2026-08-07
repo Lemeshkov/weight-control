@@ -90,6 +90,7 @@ class WeighingLidarCoordinator:
         self._seen_unload = False
         self._lock = asyncio.Lock()
         self._finish_task: Optional[asyncio.Task] = None
+        self._current_lifecycle_token: Optional[str] = None
 
     async def check_persistence(self) -> bool:
         if self.repository_mode == "memory":
@@ -127,6 +128,7 @@ class WeighingLidarCoordinator:
         raw = data.get("full_response") if isinstance(data.get("full_response"), dict) else data
         return {
             "state_name": str(raw.get("StateName") or data.get("state") or ""),
+            "plate_number": str(data.get("plate_number") or raw.get("PlateNumber") or ""),
             "state": raw.get("State"),
             "massa": float(raw.get("Massa", data.get("weight", 0)) or 0),
             "stabil": bool(raw.get("Stabil", data.get("is_stable", False))),
@@ -261,6 +263,7 @@ class WeighingLidarCoordinator:
             state_timestamps={"ENTERING_AND_SCANNING": now.isoformat()},
         )
         self.active_session = session
+        self._current_lifecycle_token = session.session_key
         self._last_logged_fsm = None
         self._reset_stable_counter("new_session", session, snapshot)
         await self._create_repository_record(session)
@@ -430,25 +433,66 @@ class WeighingLidarCoordinator:
 
             self._previous_state_name = state_name
 
-    async def bind_trip(self, trip_id: int) -> bool:
+    def current_pass_token(self) -> Optional[str]:
+        return self._current_lifecycle_token
+
+    def bound_trip_id(self, pass_token: Optional[str]) -> Optional[int]:
+        if not pass_token or pass_token != self._current_lifecycle_token:
+            return None
+        for session in (self.active_session, self.last_session):
+            if session is not None and session.session_key == pass_token:
+                return session.trip_id
+        return None
+
+    async def bind_trip(self, trip_id: int, pass_token: Optional[str] = None) -> bool:
         async with self._lock:
-            session = self.active_session or self.last_session
+            if not pass_token:
+                logger.warning("Lidar trip bind rejected: trip_id=%s reason=missing_pass_token", trip_id)
+                return False
+            if pass_token != self._current_lifecycle_token:
+                logger.warning(
+                    "Lidar trip bind rejected: trip_id=%s pass_token=%s current_token=%s reason=stale_lifecycle",
+                    trip_id,
+                    pass_token,
+                    self._current_lifecycle_token,
+                )
+                return False
+            session = next(
+                (
+                    candidate
+                    for candidate in (self.active_session, self.last_session)
+                    if candidate is not None and candidate.session_key == pass_token
+                ),
+                None,
+            )
             if session is None:
+                logger.warning(
+                    "Lidar trip bind rejected: trip_id=%s pass_token=%s reason=session_not_found",
+                    trip_id,
+                    pass_token,
+                )
                 return False
             if session.trip_id == trip_id:
                 return True
             if session.trip_id is not None:
+                logger.error(
+                    "Lidar trip rebind rejected: session=%s existing_trip_id=%s requested_trip_id=%s",
+                    session.session_key,
+                    session.trip_id,
+                    trip_id,
+                )
                 return False
             session.trip_id = trip_id
             await self._update_repository(session)
+            logger.info("Lidar session bound: session=%s trip_id=%s", session.session_key, trip_id)
             return True
-
     def current_state(self) -> dict:
         session = self.active_session
         snapshot = self.last_scale_snapshot or {}
         return {
             "scale": {
                 "state_name": snapshot.get("state_name"),
+                "plate_number": snapshot.get("plate_number"),
                 "massa": snapshot.get("massa"),
                 "stabil": snapshot.get("stabil"),
                 "connected": self.scale_connected,

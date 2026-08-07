@@ -194,7 +194,7 @@ def test_updates_do_not_retry_sql_after_fallback(tmp_path):
     async def scenario():
         await coordinator.check_persistence()
         await coordinator.on_scale_snapshot(scale("LoadScale", 1600))
-        await coordinator.bind_trip(42)
+        await coordinator.bind_trip(42, coordinator.current_pass_token())
         await coordinator.on_scale_snapshot(scale("Weighing", 31520, True))
         await coordinator._finish_task
 

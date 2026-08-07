@@ -90,6 +90,7 @@ async def get_current_weight():
 async def start_trip(db: Session = Depends(get_db)):
     """Начать новый рейс (въезд)"""
     data = await uniserver_client.get_current_weighting()
+    pass_token = weighing_lidar_coordinator.current_pass_token()
     
     if not data:
         raise HTTPException(status_code=503, detail="Cannot connect to UniServer")
@@ -115,7 +116,7 @@ async def start_trip(db: Session = Depends(get_db)):
             logger.warning(f"⚠️ Рейс с кодом {doc_id} уже существует (ID: {existing_by_code.id})")
             # Если рейс уже существует, но активный - возвращаем его
             if existing_by_code.status == models.TripStatus.ENTRY:
-                await weighing_lidar_coordinator.bind_trip(existing_by_code.id)
+                await weighing_lidar_coordinator.bind_trip(existing_by_code.id, pass_token)
                 return {
                     "trip_id": existing_by_code.id,
                     "message": f"Рейс уже существует для {plate_number}, вес {weight}кг",
@@ -129,17 +130,6 @@ async def start_trip(db: Session = Depends(get_db)):
     
     # Получаем или создаем автомобиль
     vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
-    
-    # Проверяем, нет ли активного рейса
-    active_trip = TripCRUD.get_trip_by_vehicle_and_status(
-        db, vehicle.id, models.TripStatus.ENTRY
-    )
-    
-    if active_trip:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Активный рейс уже существует для автомобиля {plate_number} (ID: {active_trip.id})"
-        )
     
     # ✅ Создаем рейс с сохранением uniserver_code
     trip = models.Trip(
@@ -170,7 +160,7 @@ async def start_trip(db: Session = Depends(get_db)):
     
     commit_or_conflict(db, "Не удалось создать рейс: конфликт данных")
     db.refresh(trip)
-    await weighing_lidar_coordinator.bind_trip(trip.id)
+    await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
     
     logger.info(f"✅ Создан рейс {trip.id} для {plate_number}, вес {weight}кг, код: {doc_id}")
     
@@ -384,6 +374,7 @@ async def auto_create_trip(db: Session = Depends(get_db)):
     """
     # Получаем текущие данные с весов
     data = await uniserver_client.get_current_weighting()
+    pass_token = weighing_lidar_coordinator.current_pass_token()
     
     if not data:
         raise HTTPException(status_code=503, detail="Cannot connect to UniServer")
@@ -403,23 +394,6 @@ async def auto_create_trip(db: Session = Depends(get_db)):
     
     # Получаем или создаем автомобиль
     vehicle = VehicleCRUD.get_or_create_by_plate(db, plate_number)
-    
-    # Проверяем, есть ли активный рейс
-    active_trip = TripCRUD.get_trip_by_vehicle_and_status(
-        db, vehicle.id, models.TripStatus.ENTRY
-    )
-    
-    if active_trip:
-        # Обновляем вес в активном рейсе
-        if active_trip.entry_measurement:
-            active_trip.entry_measurement.weight_brutto = weight
-            db.commit()
-            await weighing_lidar_coordinator.bind_trip(active_trip.id)
-            return {
-                "status": "updated",
-                "trip_id": active_trip.id,
-                "message": f"Обновлен вес для {plate_number}: {weight} кг"
-            }
     
     # Создаем новый рейс
     trip = models.Trip(
@@ -448,7 +422,7 @@ async def auto_create_trip(db: Session = Depends(get_db)):
     db.add(uniserver_event)
     
     db.commit()
-    await weighing_lidar_coordinator.bind_trip(trip.id)
+    await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
     
     logger.info(f" Автоматически создан рейс {trip.id} для {plate_number}, вес {weight} кг")
     
