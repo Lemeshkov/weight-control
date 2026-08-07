@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload
 
 import models
 from database import get_db
@@ -57,6 +57,7 @@ class ControlHistoryItem(BaseModel):
     vehicle: ControlHistoryVehicle
     weight: ControlHistoryWeight
     lidar: Optional[ControlHistoryLidar] = None
+    sessions_count: int = 0
     photo_path: Optional[str] = None
 
 
@@ -95,19 +96,33 @@ async def get_control_history(
             joinedload(models.Trip.vehicle),
             joinedload(models.Trip.entry_measurement),
             joinedload(models.Trip.exit_measurement),
-            selectinload(models.Trip.lidar_pass_sessions),
         )
         .order_by(models.Trip.entry_time.desc())
         .limit(limit)
         .all()
     )
+    trip_ids = [trip.id for trip in trips]
+    sessions_by_trip: dict[int, list[models.LidarPassSession]] = {
+        trip_id: [] for trip_id in trip_ids
+    }
+    if trip_ids:
+        lidar_sessions = (
+            db.query(models.LidarPassSession)
+            .filter(models.LidarPassSession.trip_id.in_(trip_ids))
+            .order_by(
+                models.LidarPassSession.trip_id,
+                models.LidarPassSession.started_at.desc(),
+                models.LidarPassSession.id.desc(),
+            )
+            .all()
+        )
+        for session in lidar_sessions:
+            if session.trip_id is not None:
+                sessions_by_trip[int(session.trip_id)].append(session)
     items = []
     for trip in trips:
-        lidar = max(
-            trip.lidar_pass_sessions,
-            key=lambda session: (session.started_at, session.id),
-            default=None,
-        )
+        trip_sessions = sessions_by_trip.get(int(trip.id), [])
+        lidar = trip_sessions[0] if trip_sessions else None
         brutto = trip.entry_measurement.weight_brutto if trip.entry_measurement else None
         tare = trip.exit_measurement.weight_tare if trip.exit_measurement else None
         items.append(
@@ -148,6 +163,7 @@ async def get_control_history(
                     "volume_status": lidar.volume_status,
                     "estimated_volume_m3": lidar.estimated_volume_m3,
                 } if lidar else None,
+                "sessions_count": len(trip_sessions),
                 "photo_path": (
                     trip.entry_measurement.photo_path
                     if trip.entry_measurement and trip.entry_measurement.photo_path
