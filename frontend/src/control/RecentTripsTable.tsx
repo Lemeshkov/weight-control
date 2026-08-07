@@ -7,6 +7,7 @@ function Details({ item }: { item: ControlHistoryItem }) {
   return <div className="trip-details">
     <section><h4>Весовой блок</h4><p>Trip: №{item.trip_id}</p><p>Заезд: {dateTime(item.entry_time)}</p><p>Стабильный вес: {kg(lidar?.stable_weight_kg)}</p><p>Максимальная масса: {kg(lidar?.maximum_observed_weight_kg)}</p>{lidar?.error_message === "stable_weight_missing" && <p className="warning-text">Нет подтверждённого стабильного веса</p>}</section>
     <section><h4>Лидарный блок</h4>{lidar ? <><p>Сессия: {lidar.session_key || `№${lidar.session_id} (ключ не сохранялся)`}</p><p>Статус: {lidarLabels[lidar.status] || lidar.status}</p><p>Начало: {dateTime(lidar.started_at)}</p><p>LoadScale: {dateTime(lidar.load_scale_at)}</p><p>Завершение: {dateTime(lidar.ended_at)}</p><p>Профили: {lidar.profiles_count}, до триггера: {lidar.pre_trigger_profiles_count}</p><p>Валидные профили: {lidar.valid_profiles_count}</p><p>Точки: {lidar.points_valid} из {lidar.points_total}</p><p>JSON: {lidar.data_file_path || "Не создан"}</p><p>Объём: {volumeLabels[lidar.volume_status] || lidar.volume_status}</p></> : <p>Лидарная сессия отсутствует</p>}</section>
+    <section><h4>Накладная</h4><p>{item.acceptance_status === "COMPLETED" ? "Оформлена" : item.acceptance_status === "DRAFT" ? "Черновик" : "Ожидает"}</p></section>
     <section><h4>Камера</h4><p>{item.photo_path ? `Фото: ${item.photo_path}` : "Фото проезда не сохранялось"}</p></section>
   </div>;
 }

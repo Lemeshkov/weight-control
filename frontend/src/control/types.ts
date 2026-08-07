@@ -65,4 +65,5 @@ export interface ControlHistoryItem {
   weight: { value_kg: number | null; tare_kg: number | null; net_kg: number | null; stable: boolean; completed_at: string | null };
   lidar: HistoryLidar | null;
   photo_path: string | null;
+  acceptance_status?: "WAITING" | "DRAFT" | "COMPLETED";
 }

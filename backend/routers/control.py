@@ -59,6 +59,7 @@ class ControlHistoryItem(BaseModel):
     lidar: Optional[ControlHistoryLidar] = None
     sessions_count: int = 0
     photo_path: Optional[str] = None
+    acceptance_status: str = "WAITING"
 
 
 class ControlHistoryResponse(BaseModel):
@@ -96,6 +97,7 @@ async def get_control_history(
             joinedload(models.Trip.vehicle),
             joinedload(models.Trip.entry_measurement),
             joinedload(models.Trip.exit_measurement),
+            joinedload(models.Trip.coal_acceptance),
         )
         .order_by(models.Trip.entry_time.desc())
         .limit(limit)
@@ -134,7 +136,7 @@ async def get_control_history(
                 "status": trip.status.value if hasattr(trip.status, "value") else str(trip.status),
                 "vehicle": {
                     "brand": trip.vehicle.model if trip.vehicle else None,
-                    "license_plate": trip.vehicle.plate_number if trip.vehicle else "—",
+                    "license_plate": trip.vehicle.plate_number if trip.vehicle else "вЂ”",
                 },
                 "weight": {
                     "value_kg": brutto,
@@ -165,6 +167,7 @@ async def get_control_history(
                     "estimated_volume_m3": lidar.estimated_volume_m3,
                 } if lidar else None,
                 "sessions_count": len(trip_sessions),
+                "acceptance_status": trip.coal_acceptance.status.value if trip.coal_acceptance else "WAITING",
                 "photo_path": (
                     trip.entry_measurement.photo_path
                     if trip.entry_measurement and trip.entry_measurement.photo_path

@@ -1,7 +1,8 @@
 ﻿# app/models.py
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text, JSON, Enum
+from sqlalchemy import Column, Integer, BigInteger, String, Float, Numeric, Date, DateTime, Boolean, ForeignKey, Text, JSON, Enum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime
 import enum
 
@@ -13,6 +14,10 @@ class TripStatus(str, enum.Enum):
     EXIT = "exit"    # На выезде
     COMPLETED = "completed"  # Завершен
     REJECTED = "rejected"    # Отклонен
+
+class CoalAcceptanceStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    COMPLETED = "COMPLETED"
 
 class ResidueType(str, enum.Enum):
     CLEAN = "clean"
@@ -100,6 +105,7 @@ class Trip(Base):
     uniserver_events = relationship("UniserverEvent", back_populates="trip")
     lidar_measurements = relationship("LidarMeasurement", back_populates="trip")
     lidar_pass_sessions = relationship("LidarPassSession", back_populates="trip")
+    coal_acceptance = relationship("CoalAcceptance", back_populates="trip", uselist=False)
 class EntryMeasurement(Base):
     __tablename__ = "entry_measurements"
     
@@ -276,6 +282,48 @@ class LidarPassSession(Base):
 
     trip = relationship("Trip", back_populates="lidar_pass_sessions")
 
+
+class CoalAcceptance(Base):
+    __tablename__ = "coal_acceptances"
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    shipment_date = Column(Date, nullable=True)
+    act_number = Column(String(100), nullable=True)
+    transport_invoice_number = Column(String(100), nullable=True, index=True)
+    document_net_weight_t = Column(Numeric(18, 3), nullable=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True, index=True)
+    coal_grade_id = Column(Integer, ForeignKey("coal_grades.id"), nullable=True, index=True)
+    uk_number = Column(String(100), nullable=True)
+    invoice_number = Column(String(100), nullable=True)
+    receiver_name = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    status = Column(Enum(CoalAcceptanceStatus, name="coal_acceptance_status"), nullable=False, default=CoalAcceptanceStatus.DRAFT, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now().astimezone())
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now().astimezone(), onupdate=lambda: datetime.now().astimezone())
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    trip = relationship("Trip", back_populates="coal_acceptance")
+    supplier = relationship("Supplier")
+    coal_grade = relationship("CoalGrade")
+    audit_events = relationship("CoalAcceptanceAuditLog", back_populates="acceptance", cascade="all, delete-orphan")
+
+
+class CoalAcceptanceAuditLog(Base):
+    __tablename__ = "coal_acceptance_audit_log"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    coal_acceptance_id = Column(Integer, ForeignKey("coal_acceptances.id", ondelete="CASCADE"), nullable=False, index=True)
+    trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=False, index=True)
+    action = Column(String(32), nullable=False)
+    changed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    changed_by_name = Column(String(255), nullable=True)
+    previous_values = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    new_values = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now().astimezone(), index=True)
+
+    acceptance = relationship("CoalAcceptance", back_populates="audit_events")
 
 from lab_models import (
     CoalFraction, CoalGrade, LabAuditLog, LabExperiment, LabExperimentStatus,

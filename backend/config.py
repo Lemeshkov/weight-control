@@ -1,5 +1,6 @@
 # backend/config.py
 import os
+from decimal import Decimal
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,6 +45,8 @@ class Settings:
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    COAL_ACCEPTANCE_WEIGHT_TOLERANCE: Decimal = Decimal(os.getenv("COAL_ACCEPTANCE_WEIGHT_TOLERANCE", "0.015"))
+    COAL_ACCEPTANCE_LOCAL_TIMEZONE: str = os.getenv("COAL_ACCEPTANCE_LOCAL_TIMEZONE", "Asia/Krasnoyarsk")
 
 # Создаем экземпляр настроек
 settings = Settings()
