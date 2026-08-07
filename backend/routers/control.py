@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -93,6 +94,10 @@ async def get_control_history(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
+    logger.warning(
+        "CONTROL_HISTORY PID=%s",
+        os.getpid(),
+    )
     bind = db.get_bind()
     logger.info(
         "CONTROL_HISTORY database=%s",
