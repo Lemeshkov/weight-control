@@ -1,4 +1,6 @@
 import asyncio
+
+import pytest
 from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, event
@@ -191,8 +193,9 @@ def test_control_history_query_count_is_constant():
     assert "distances_mm" not in str(response)
 
 
+@pytest.mark.parametrize("acceptance_status", [None, models.CoalAcceptanceStatus.DRAFT, models.CoalAcceptanceStatus.COMPLETED])
 def test_control_history_http_endpoint_uses_production_get_db_session_factory(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, acceptance_status
 ):
     database_path = tmp_path / "control-history.db"
     engine = create_engine(
@@ -215,6 +218,8 @@ def test_control_history_http_endpoint_uses_production_get_db_session_factory(
         status=models.TripStatus.ENTRY,
     )
     trip.entry_measurement = models.EntryMeasurement(weight_brutto=4850)
+    if acceptance_status is not None:
+        trip.coal_acceptance = models.CoalAcceptance(status=acceptance_status)
     db.add_all(
         [
             trip,
@@ -237,6 +242,9 @@ def test_control_history_http_endpoint_uses_production_get_db_session_factory(
     assert response.status_code == 200
     item = response.json()["items"][0]
     assert item["trip_id"] == 10
+    assert item["acceptance_status"] == (
+        acceptance_status.value if acceptance_status else "WAITING"
+    )
     assert item["sessions_count"] == 1
     assert item["lidar"] is not None
     assert item["lidar"]["session_id"] == 2

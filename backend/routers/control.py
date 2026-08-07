@@ -1,4 +1,5 @@
 from datetime import datetime
+from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -104,9 +105,7 @@ async def get_control_history(
         .all()
     )
     trip_ids = [trip.id for trip in trips]
-    sessions_by_trip: dict[int, list[models.LidarPassSession]] = {
-        trip_id: [] for trip_id in trip_ids
-    }
+    sessions_by_trip: dict[int, list[models.LidarPassSession]] = defaultdict(list)
     if trip_ids:
         lidar_sessions = (
             db.query(models.LidarPassSession)
@@ -123,13 +122,11 @@ async def get_control_history(
                 sessions_by_trip[int(session.trip_id)].append(session)
     items = []
     for trip in trips:
-        trip_key = int(trip.id)
-        trip_sessions = sessions_by_trip.get(trip_key, [])
-        lidar = trip_sessions[0] if trip_sessions else None
+        trip_sessions = sessions_by_trip.get(int(trip.id), [])
+        latest_lidar = trip_sessions[0] if trip_sessions else None
         brutto = trip.entry_measurement.weight_brutto if trip.entry_measurement else None
         tare = trip.exit_measurement.weight_tare if trip.exit_measurement else None
-        items.append(
-            {
+        item = {
                 "trip_id": trip.id,
                 "entry_time": trip.entry_time,
                 "exit_time": trip.exit_time,
@@ -142,32 +139,31 @@ async def get_control_history(
                     "value_kg": brutto,
                     "tare_kg": tare,
                     "net_kg": brutto - tare if brutto is not None and tare is not None else None,
-                    "stable": bool(lidar and lidar.stable_weight_at),
-                    "completed_at": lidar.completed_at if lidar else trip.exit_time,
+                    "stable": bool(latest_lidar and latest_lidar.stable_weight_at),
+                    "completed_at": latest_lidar.completed_at if latest_lidar else trip.exit_time,
                 },
                 "lidar": {
-                    "session_id": lidar.id,
+                    "session_id": latest_lidar.id,
                     "session_key": None,
-                    "status": lidar.status,
-                    "workflow_state": lidar.workflow_state,
-                    "started_at": lidar.started_at,
-                    "load_scale_at": lidar.load_scale_at,
-                    "stable_weight_at": lidar.stable_weight_at,
-                    "ended_at": lidar.ended_at,
-                    "stable_weight_kg": lidar.stable_weight_kg,
-                    "maximum_observed_weight_kg": lidar.maximum_observed_weight_kg,
-                    "profiles_count": lidar.profiles_count,
-                    "pre_trigger_profiles_count": lidar.pre_trigger_profiles_count,
-                    "valid_profiles_count": lidar.valid_profiles_count,
-                    "points_total": lidar.points_total,
-                    "points_valid": lidar.points_valid,
-                    "data_file_path": lidar.data_file_path,
-                    "error_message": lidar.error_message,
-                    "volume_status": lidar.volume_status,
-                    "estimated_volume_m3": lidar.estimated_volume_m3,
-                } if lidar else None,
+                    "status": latest_lidar.status,
+                    "workflow_state": latest_lidar.workflow_state,
+                    "started_at": latest_lidar.started_at,
+                    "load_scale_at": latest_lidar.load_scale_at,
+                    "stable_weight_at": latest_lidar.stable_weight_at,
+                    "ended_at": latest_lidar.ended_at,
+                    "stable_weight_kg": latest_lidar.stable_weight_kg,
+                    "maximum_observed_weight_kg": latest_lidar.maximum_observed_weight_kg,
+                    "profiles_count": latest_lidar.profiles_count,
+                    "pre_trigger_profiles_count": latest_lidar.pre_trigger_profiles_count,
+                    "valid_profiles_count": latest_lidar.valid_profiles_count,
+                    "points_total": latest_lidar.points_total,
+                    "points_valid": latest_lidar.points_valid,
+                    "data_file_path": latest_lidar.data_file_path,
+                    "error_message": latest_lidar.error_message,
+                    "volume_status": latest_lidar.volume_status,
+                    "estimated_volume_m3": latest_lidar.estimated_volume_m3,
+                } if latest_lidar else None,
                 "sessions_count": len(trip_sessions),
-                "acceptance_status": trip.coal_acceptance.status.value if trip.coal_acceptance else "WAITING",
                 "photo_path": (
                     trip.entry_measurement.photo_path
                     if trip.entry_measurement and trip.entry_measurement.photo_path
@@ -176,5 +172,9 @@ async def get_control_history(
                     else None
                 ),
             }
+        item["acceptance_status"] = (
+            trip.coal_acceptance.status.value
+            if trip.coal_acceptance else "WAITING"
         )
+        items.append(item)
     return {"items": items}
