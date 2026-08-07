@@ -246,3 +246,6 @@ def test_control_history_http_endpoint_uses_production_get_db_session_factory(
     assert "CONTROL_HISTORY lidar_rows=[(2, 10" in caplog.text
     assert "CONTROL_HISTORY sessions_by_trip_keys=[10]" in caplog.text
     assert "CONTROL_HISTORY attach trip_id=10 key=10 sessions=1" in caplog.text
+    assert "CONTROL_HISTORY FINAL_ITEM trip_id=10" in caplog.text
+    assert "sessions_count=1" in caplog.text
+    assert "CONTROL_HISTORY FINAL_RESPONSE=" in caplog.text

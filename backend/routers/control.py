@@ -197,4 +197,22 @@ async def get_control_history(
                 ),
             }
         )
+        item = items[-1]
+        logger.info(
+            "CONTROL_HISTORY FINAL_ITEM trip_id=%s lidar=%r sessions_count=%s",
+            item.get("trip_id"),
+            item.get("lidar"),
+            item.get("sessions_count"),
+        )
+    logger.info(
+        "CONTROL_HISTORY FINAL_RESPONSE=%s",
+        [
+            {
+                "trip_id": item.get("trip_id"),
+                "lidar": item.get("lidar"),
+                "sessions_count": item.get("sessions_count"),
+            }
+            for item in items
+        ],
+    )
     return {"items": items}
