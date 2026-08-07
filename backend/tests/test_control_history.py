@@ -3,10 +3,14 @@ from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import database
 
 import models
 from database import Base
-from routers.control import get_control_history
+from routers.control import get_control_history, router as control_router
 
 
 def lidar_values(*, started_at, profiles_count=25, pre_trigger_profiles_count=15):
@@ -185,3 +189,60 @@ def test_control_history_query_count_is_constant():
     assert len(response["items"]) == 5
     assert len(selects) == 2
     assert "distances_mm" not in str(response)
+
+
+def test_control_history_http_endpoint_uses_production_get_db_session_factory(
+    tmp_path, monkeypatch, caplog
+):
+    database_path = tmp_path / "control-history.db"
+    engine = create_engine(
+        f"sqlite:///{database_path}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    test_session_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=engine,
+    )
+    monkeypatch.setattr(database, "SessionLocal", test_session_factory)
+
+    db = test_session_factory()
+    trip = models.Trip(
+        id=10,
+        vehicle=models.Vehicle(plate_number="У211АА147"),
+        entry_time=datetime(2026, 8, 7, 14, 17, 47),
+        status=models.TripStatus.ENTRY,
+    )
+    trip.entry_measurement = models.EntryMeasurement(weight_brutto=4850)
+    db.add_all(
+        [
+            trip,
+            models.LidarPassSession(
+                id=2,
+                trip_id=10,
+                **lidar_values(
+                    started_at=datetime(2026, 8, 7, 7, 17, 41, tzinfo=timezone.utc)
+                ),
+            ),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    caplog.set_level("INFO", logger="routers.control")
+    app = FastAPI()
+    app.include_router(control_router)
+    response = TestClient(app).get("/api/control/history?limit=10")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["trip_id"] == 10
+    assert item["sessions_count"] == 1
+    assert item["lidar"] is not None
+    assert item["lidar"]["session_id"] == 2
+    assert item["lidar"]["profiles_count"] == 25
+    assert "CONTROL_HISTORY trip_ids=[10]" in caplog.text
+    assert "CONTROL_HISTORY lidar_rows=[(2, 10" in caplog.text
+    assert "CONTROL_HISTORY sessions_by_trip_keys=[10]" in caplog.text
+    assert "CONTROL_HISTORY attach trip_id=10 key=10 sessions=1" in caplog.text
