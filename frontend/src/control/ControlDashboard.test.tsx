@@ -8,7 +8,7 @@ import type { ControlCurrent, ControlHistoryItem } from "./types";
 
 const current = (state = "Empty", error: string | null = null): ControlCurrent => ({
   scale: { state_name: state, massa: state === "Weighing" ? 4850 : 0, stabil: false, connected: true },
-  lidar: { connected: true, recording: state !== "Empty", session_profiles: 31 },
+  lidar: { connected: true, reader_running: true, buffer_profiles: 16, latest_sequence_number: 256, last_profile_at: null, last_error: null, recording: state !== "Empty", session_profiles: 31 },
   active_session: state === "Empty" ? null : { id: 2, session_key: "pass", status: error ? "COMPLETED" : "RECORDING", workflow_state: state, trip_id: 6, started_at: "2026-01-01T00:00:00Z", load_scale_at: "2026-01-01T00:00:01Z", stable_weight_at: null, ended_at: error ? "2026-01-01T00:01:00Z" : null, profiles_count: 31, pre_trigger_profiles_count: 17, data_file_path: error ? "pass.json" : null, error_message: error, volume_status: "NOT_CALCULATED", estimated_volume_m3: null },
   stable_confirmation: { current_count: 2, required_count: 3, last_reset_reason: null, last_sample_at: null },
   persistence_available: true, persistence_error: null, repository_mode: "sql",
@@ -47,7 +47,7 @@ describe("operator control components", () => {
     const value = current(); value.lidar.connected = false;
     render(<EquipmentStatusBar control={value} camera={{ connected: false, frame_timestamp: null, errors: 1 }} />);
     expect(screen.getAllByText("Нет связи").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("SQL")).toBeTruthy();
+    expect(screen.getByText("Онлайн / SQL")).toBeTruthy();
     expect(screen.queryByText(/Временный режим/)).toBeNull();
   });
 
@@ -58,6 +58,37 @@ describe("operator control components", () => {
     value.repository_mode = "sql"; value.persistence_available = true;
     rerender(<SystemWarningBanner control={value} backendError={null} />);
     expect(screen.queryByText("Временный режим хранения.")).toBeNull();
+  });
+
+  it("uses the real control/current DTO for scale, lidar and SQL statuses", () => {
+    const realResponse: ControlCurrent = {
+      scale: { state_name: "Empty", massa: -50, stabil: true, connected: true },
+      lidar: { connected: true, reader_running: true, buffer_profiles: 16, latest_sequence_number: 256, last_profile_at: null, last_error: null, recording: false, session_profiles: 0 },
+      active_session: null,
+      stable_confirmation: { current_count: 0, required_count: 3, last_reset_reason: null, last_sample_at: null },
+      persistence_available: true,
+      persistence_error: null,
+      repository_mode: "sql",
+    };
+    render(<EquipmentStatusBar control={realResponse} controlStatus="online" camera={null} />);
+    expect(screen.getByTestId("equipment-Весы").className).toContain("equipment--ok");
+    expect(screen.getByTestId("equipment-Лидар").className).toContain("equipment--ok");
+    expect(screen.getByTestId("equipment-База данных").className).toContain("equipment--ok");
+    expect(screen.getByTestId("equipment-Камера").className).toContain("equipment--unknown");
+    expect(screen.getByText("Онлайн / SQL")).toBeTruthy();
+  });
+
+  it("shows memory as limited and a failed endpoint as offline, not checking", () => {
+    const memory = current(); memory.repository_mode = "memory"; memory.persistence_available = false;
+    const { rerender } = render(<EquipmentStatusBar control={memory} controlStatus="online" camera={null} />);
+    expect(screen.getByTestId("equipment-База данных").className).toContain("equipment--warn");
+    expect(screen.getByText("Ограниченный / Memory fallback")).toBeTruthy();
+    rerender(<EquipmentStatusBar control={null} controlStatus="offline" camera={null} />);
+    expect(screen.getByTestId("equipment-Весы").className).toContain("equipment--bad");
+    expect(screen.getByTestId("equipment-Лидар").className).toContain("equipment--bad");
+    expect(screen.getByTestId("equipment-База данных").className).toContain("equipment--bad");
+    expect(screen.getAllByText("Нет связи")).toHaveLength(3);
+    expect(screen.queryByText("Проверка…")).toBeTruthy(); // camera is checked independently
   });
   it("shows saved JSON details, no historical photo, and creates no camera streams", () => {
     render(<RecentTripsTable items={[historyItem(1), historyItem(2)]} error={null} refresh={() => undefined} />);

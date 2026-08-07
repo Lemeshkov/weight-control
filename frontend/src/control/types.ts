@@ -16,9 +16,11 @@ export interface LidarSession {
   estimated_volume_m3: number | null;
 }
 
+export type ControlEndpointStatus = "checking" | "online" | "offline";
+
 export interface ControlCurrent {
   scale: { state_name: string | null; plate_number?: string | null; massa: number | null; stabil: boolean | null; connected: boolean };
-  lidar: { connected?: boolean; is_connected?: boolean; recording: boolean; session_profiles: number; last_error?: string | null };
+  lidar: { connected: boolean; reader_running: boolean; buffer_profiles: number; latest_sequence_number: number | null; last_profile_at: string | null; last_error: string | null; buffer_seconds?: number; max_count?: number; recording: boolean; session_profiles: number };
   active_session: LidarSession | null;
   stable_confirmation: { current_count: number; required_count: number; last_reset_reason: string | null; last_sample_at: string | null };
   persistence_available: boolean;

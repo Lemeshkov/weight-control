@@ -1,17 +1,42 @@
-import type { CameraStatus, ControlCurrent } from "./types";
+import type { CameraStatus, ControlCurrent, ControlEndpointStatus } from "./types";
 
-function Indicator({ label, state, text }: { label: string; state: "ok" | "warn" | "bad" | "unknown"; text: string }) {
+type IndicatorState = "ok" | "warn" | "bad" | "unknown";
+
+function Indicator({ label, state, text }: { label: string; state: IndicatorState; text: string }) {
   const icons = { ok: "●", warn: "▲", bad: "×", unknown: "○" };
-  return <div className={`equipment equipment--${state}`}><span aria-hidden>{icons[state]}</span><div><b>{label}</b><small>{text}</small></div></div>;
+  return <div className={`equipment equipment--${state}`} data-testid={`equipment-${label}`}>
+    <span aria-hidden>{icons[state]}</span><div><b>{label}</b><small>{text}</small></div>
+  </div>;
 }
 
-export function EquipmentStatusBar({ control, camera }: { control: ControlCurrent | null; camera: CameraStatus | null }) {
-  const lidarConnected = Boolean(control?.lidar.connected ?? control?.lidar.is_connected);
-  const repository = !control ? ["unknown", "Проверка…"] : control.repository_mode === "sql" && control.persistence_available ? ["ok", "SQL"] : control.repository_mode === "memory" ? ["warn", "Memory fallback"] : ["bad", "Нет связи"];
+export function EquipmentStatusBar({ control, camera, controlStatus = control ? "online" : "checking" }: {
+  control: ControlCurrent | null;
+  camera: CameraStatus | null;
+  controlStatus?: ControlEndpointStatus;
+}) {
+  const checking = controlStatus === "checking";
+  const endpointOffline = controlStatus === "offline";
+  const scaleOnline = control?.scale.connected === true;
+  const lidarOnline = control?.lidar.connected === true && control.lidar.reader_running === true;
+  const databaseOnline = control?.persistence_available === true && control.repository_mode === "sql";
+
+  const device = (online: boolean): { state: IndicatorState; text: string } =>
+    checking ? { state: "unknown", text: "Проверка…" } : endpointOffline
+      ? { state: "bad", text: "Нет связи" }
+      : online ? { state: "ok", text: "Онлайн" } : { state: "bad", text: "Нет связи" };
+  const scale = device(scaleOnline);
+  const lidar = device(lidarOnline);
+  const repository: { state: IndicatorState; text: string } = checking
+    ? { state: "unknown", text: "Проверка…" }
+    : endpointOffline ? { state: "bad", text: "Нет связи" }
+    : control?.repository_mode === "memory" ? { state: "warn", text: "Ограниченный / Memory fallback" }
+    : databaseOnline ? { state: "ok", text: "Онлайн / SQL" }
+    : { state: "bad", text: "Нет связи" };
+
   return <section className="equipment-bar" aria-label="Состояние оборудования">
-    <Indicator label="Весы" state={!control ? "unknown" : control.scale.connected ? "ok" : "bad"} text={!control ? "Проверка…" : control.scale.connected ? "Онлайн" : "Нет связи"} />
-    <Indicator label="Лидар" state={!control ? "unknown" : lidarConnected ? "ok" : "bad"} text={!control ? "Проверка…" : lidarConnected ? "Онлайн" : "Нет связи"} />
+    <Indicator label="Весы" {...scale} />
+    <Indicator label="Лидар" {...lidar} />
     <Indicator label="Камера" state={!camera ? "unknown" : camera.connected ? "ok" : "bad"} text={!camera ? "Проверка…" : camera.connected ? "Онлайн" : "Нет связи"} />
-    <Indicator label="База данных" state={repository[0] as "ok" | "warn" | "bad" | "unknown"} text={repository[1]} />
+    <Indicator label="База данных" {...repository} />
   </section>;
 }

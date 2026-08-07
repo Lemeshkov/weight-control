@@ -10,7 +10,7 @@ export function mockCurrent(): ControlCurrent {
   const profiles = active ? 12 + phase * 9 : 0;
   return {
     scale: { state_name: state, plate_number: active ? "А123ВС142" : "", massa: phase < 2 ? phase * 900 : 4850, stabil: phase >= 3, connected: true },
-    lidar: { connected: phase !== 2, recording: active, session_profiles: profiles },
+    lidar: { connected: phase !== 2, reader_running: phase !== 2, buffer_profiles: 16, latest_sequence_number: 256, last_profile_at: new Date().toISOString(), last_error: null, recording: active, session_profiles: profiles },
     active_session: active ? {
       id: 2, session_key: "demo-pass", status: "RECORDING", workflow_state: state,
       trip_id: 6, started_at: new Date(started).toISOString(), load_scale_at: new Date(started + 4000).toISOString(),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mockCamera, mockCurrent, mockHistory } from "./mock";
-import type { CameraStatus, ControlCurrent, ControlHistoryItem } from "./types";
+import type { CameraStatus, ControlCurrent, ControlEndpointStatus, ControlHistoryItem } from "./types";
 
 const useMock = import.meta.env.VITE_USE_CONTROL_MOCK === "true";
 
@@ -13,6 +13,7 @@ async function getJson<T>(url: string, signal: AbortSignal): Promise<T> {
 export function useControlCurrent() {
   const [data, setData] = useState<ControlCurrent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<ControlEndpointStatus>("checking");
   const inFlight = useRef(false);
   const latest = useRef<ControlCurrent | null>(null);
   useEffect(() => {
@@ -28,8 +29,12 @@ export function useControlCurrent() {
         latest.current = next;
         setData(next);
         setError(null);
+        setStatus("online");
       } catch (reason) {
-        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Нет связи с backend");
+        if (!controller.signal.aborted) {
+          setError(reason instanceof Error ? reason.message : "Нет связи с backend");
+          setStatus("offline");
+        }
       } finally {
         inFlight.current = false;
         if (!stopped) {
@@ -44,7 +49,7 @@ export function useControlCurrent() {
     document.addEventListener("visibilitychange", onVisibility);
     return () => { stopped = true; window.clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", onVisibility); };
   }, []);
-  return { data, error };
+  return { data, error, status };
 }
 
 export function useCameraStatus() {
