@@ -19,20 +19,20 @@ export function useControlCurrent() {
   const [data, setData] = useState<ControlCurrent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<ControlEndpointStatus>("checking");
-  const inFlight = useRef(false);
   const latest = useRef<ControlCurrent | null>(null);
   useEffect(() => {
     let timer: number | undefined;
+    let inFlight = false;
     let stopped = false;
     let controller: AbortController | null = null;
     const poll = async () => {
       console.log("CONTROL POLL START", {
         stopped,
-        inFlight: inFlight.current,
+        inFlight,
         useMock,
       });
-      if (stopped || inFlight.current) return;
-      inFlight.current = true;
+      if (stopped || inFlight) return;
+      inFlight = true;
       controller = new AbortController();
       try {
         if (!useMock) console.log("CONTROL FETCH", "/api/control/current");
@@ -44,13 +44,13 @@ export function useControlCurrent() {
         setStatus("online");
         console.log("CONTROL STATUS", "online");
       } catch (reason) {
-        console.error("CONTROL FETCH ERROR", reason);
         if (!controller.signal.aborted) {
+          console.error("CONTROL FETCH ERROR", reason);
           setError(reason instanceof Error ? reason.message : "Нет связи с backend");
           setStatus("offline");
         }
       } finally {
-        inFlight.current = false;
+        inFlight = false;
         if (!stopped) {
           const current = latest.current;
           const active = current?.active_session || (current?.scale.state_name && current.scale.state_name !== "Empty");
@@ -59,7 +59,7 @@ export function useControlCurrent() {
       }
     };
     void poll();
-    const onVisibility = () => { if (!document.hidden && !inFlight.current) { window.clearTimeout(timer); void poll(); } };
+    const onVisibility = () => { if (!document.hidden && !inFlight) { window.clearTimeout(timer); void poll(); } };
     document.addEventListener("visibilitychange", onVisibility);
     return () => { stopped = true; window.clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", onVisibility); };
   }, []);
