@@ -4,6 +4,11 @@ import type { CameraStatus, ControlCurrent, ControlEndpointStatus, ControlHistor
 
 const useMock = import.meta.env.VITE_USE_CONTROL_MOCK === "true";
 
+console.log("CONTROL MOCK MODE", {
+  raw: import.meta.env.VITE_USE_CONTROL_MOCK,
+  useMock,
+});
+
 async function getJson<T>(url: string, signal: AbortSignal): Promise<T> {
   const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
@@ -21,16 +26,25 @@ export function useControlCurrent() {
     let stopped = false;
     let controller: AbortController | null = null;
     const poll = async () => {
+      console.log("CONTROL POLL START", {
+        stopped,
+        inFlight: inFlight.current,
+        useMock,
+      });
       if (stopped || inFlight.current) return;
       inFlight.current = true;
       controller = new AbortController();
       try {
+        if (!useMock) console.log("CONTROL FETCH", "/api/control/current");
         const next = useMock ? mockCurrent() : await getJson<ControlCurrent>("/api/control/current", controller.signal);
+        console.log("CONTROL FETCH OK", next);
         latest.current = next;
         setData(next);
         setError(null);
         setStatus("online");
+        console.log("CONTROL STATUS", "online");
       } catch (reason) {
+        console.error("CONTROL FETCH ERROR", reason);
         if (!controller.signal.aborted) {
           setError(reason instanceof Error ? reason.message : "Нет связи с backend");
           setStatus("offline");
