@@ -114,3 +114,57 @@ def test_new_entry_does_not_reuse_old_active_trip(monkeypatch):
     assert new_trip.status == scale_monitor_module.models.TripStatus.ENTRY
     assert old_trip.id == 7
     assert old_trip.status == scale_monitor_module.models.TripStatus.ENTRY
+
+def test_restart_existing_trip_does_not_bind_without_lifecycle_token(monkeypatch, caplog):
+    existing_trip = scale_monitor_module.models.Trip(
+        id=10,
+        vehicle_id=1,
+        status=scale_monitor_module.models.TripStatus.ENTRY,
+        uniserver_code="DOC-10",
+    )
+    bind_calls = []
+
+    class FakeQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return existing_trip
+
+    class FakeDb:
+        def query(self, _model):
+            return FakeQuery()
+
+        def rollback(self):
+            raise AssertionError("existing trip lookup unexpectedly rolled back")
+
+        def close(self):
+            return None
+
+    class CoordinatorSpy:
+        def bound_trip_id(self, pass_token):
+            assert pass_token is None
+            return None
+
+        async def bind_trip(self, trip_id, pass_token):
+            bind_calls.append((trip_id, pass_token))
+
+    monkeypatch.setattr(scale_monitor_module, "SessionLocal", FakeDb)
+    monkeypatch.setattr(
+        scale_monitor_module.VehicleCRUD,
+        "get_or_create_by_plate",
+        lambda db, plate: type("Vehicle", (), {"id": 1})(),
+    )
+    monkeypatch.setattr(
+        scale_monitor_module, "weighing_lidar_coordinator", CoordinatorSpy()
+    )
+
+    asyncio.run(
+        scale_monitor_module.ScaleMonitor()._handle_entry(
+            "A001AA", 4850, {"doc_id": "DOC-10"}, None
+        )
+    )
+
+    assert bind_calls == []
+    assert existing_trip.id == 10
+    assert "missing_pass_token" not in caplog.text

@@ -192,7 +192,7 @@ def test_control_history_query_count_is_constant():
 
 
 def test_control_history_http_endpoint_uses_production_get_db_session_factory(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch
 ):
     database_path = tmp_path / "control-history.db"
     engine = create_engine(
@@ -230,7 +230,6 @@ def test_control_history_http_endpoint_uses_production_get_db_session_factory(
     db.commit()
     db.close()
 
-    caplog.set_level("INFO", logger="routers.control")
     app = FastAPI()
     app.include_router(control_router)
     response = TestClient(app).get("/api/control/history?limit=10")
@@ -242,10 +241,3 @@ def test_control_history_http_endpoint_uses_production_get_db_session_factory(
     assert item["lidar"] is not None
     assert item["lidar"]["session_id"] == 2
     assert item["lidar"]["profiles_count"] == 25
-    assert "CONTROL_HISTORY trip_ids=[10]" in caplog.text
-    assert "CONTROL_HISTORY lidar_rows=[(2, 10" in caplog.text
-    assert "CONTROL_HISTORY sessions_by_trip_keys=[10]" in caplog.text
-    assert "CONTROL_HISTORY attach trip_id=10 key=10 sessions=1" in caplog.text
-    assert "CONTROL_HISTORY FINAL_ITEM trip_id=10" in caplog.text
-    assert "sessions_count=1" in caplog.text
-    assert "CONTROL_HISTORY FINAL_RESPONSE=" in caplog.text

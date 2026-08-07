@@ -116,7 +116,8 @@ async def start_trip(db: Session = Depends(get_db)):
             logger.warning(f"⚠️ Рейс с кодом {doc_id} уже существует (ID: {existing_by_code.id})")
             # Если рейс уже существует, но активный - возвращаем его
             if existing_by_code.status == models.TripStatus.ENTRY:
-                await weighing_lidar_coordinator.bind_trip(existing_by_code.id, pass_token)
+                if pass_token:
+                    await weighing_lidar_coordinator.bind_trip(existing_by_code.id, pass_token)
                 return {
                     "trip_id": existing_by_code.id,
                     "message": f"Рейс уже существует для {plate_number}, вес {weight}кг",
@@ -160,7 +161,8 @@ async def start_trip(db: Session = Depends(get_db)):
     
     commit_or_conflict(db, "Не удалось создать рейс: конфликт данных")
     db.refresh(trip)
-    await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
+    if pass_token:
+        await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
     
     logger.info(f"✅ Создан рейс {trip.id} для {plate_number}, вес {weight}кг, код: {doc_id}")
     
@@ -422,7 +424,8 @@ async def auto_create_trip(db: Session = Depends(get_db)):
     db.add(uniserver_event)
     
     db.commit()
-    await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
+    if pass_token:
+        await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
     
     logger.info(f" Автоматически создан рейс {trip.id} для {plate_number}, вес {weight} кг")
     

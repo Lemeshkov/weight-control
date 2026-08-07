@@ -174,7 +174,8 @@ class TripCRUD:
         
             if existing:
                 logger.info(f"ℹ️ Рейс с кодом {doc_id} уже существует (ID: {existing.id})")
-                await weighing_lidar_coordinator.bind_trip(existing.id, pass_token)
+                if pass_token:
+                    await weighing_lidar_coordinator.bind_trip(existing.id, pass_token)
                 return existing
     
     # Создать рейс
@@ -207,7 +208,8 @@ class TripCRUD:
     
         db.commit()
         db.refresh(trip)
-        await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
+        if pass_token:
+            await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
         return trip
     
     # @staticmethod

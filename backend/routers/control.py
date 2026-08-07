@@ -1,5 +1,3 @@
-import logging
-import os
 from datetime import datetime
 from typing import Optional
 
@@ -12,8 +10,6 @@ from database import get_db
 from services.lidar_profile_buffer import lidar_profile_buffer
 from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/control", tags=["control"])
 
@@ -94,15 +90,6 @@ async def get_control_history(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    logger.warning(
-        "CONTROL_HISTORY PID=%s",
-        os.getpid(),
-    )
-    bind = db.get_bind()
-    logger.info(
-        "CONTROL_HISTORY database=%s",
-        bind.url.render_as_string(hide_password=True),
-    )
     trips = (
         db.query(models.Trip)
         .options(
@@ -115,7 +102,6 @@ async def get_control_history(
         .all()
     )
     trip_ids = [trip.id for trip in trips]
-    logger.info("CONTROL_HISTORY trip_ids=%s", trip_ids)
     sessions_by_trip: dict[int, list[models.LidarPassSession]] = {
         trip_id: [] for trip_id in trip_ids
     }
@@ -130,27 +116,13 @@ async def get_control_history(
             )
             .all()
         )
-        logger.info(
-            "CONTROL_HISTORY lidar_rows=%s",
-            [(x.id, x.trip_id, x.status, x.profiles_count) for x in lidar_sessions],
-        )
         for session in lidar_sessions:
             if session.trip_id is not None:
                 sessions_by_trip[int(session.trip_id)].append(session)
-    logger.info(
-        "CONTROL_HISTORY sessions_by_trip_keys=%s",
-        list(sessions_by_trip.keys()),
-    )
     items = []
     for trip in trips:
         trip_key = int(trip.id)
         trip_sessions = sessions_by_trip.get(trip_key, [])
-        logger.info(
-            "CONTROL_HISTORY attach trip_id=%s key=%s sessions=%s",
-            trip.id,
-            trip_key,
-            len(trip_sessions),
-        )
         lidar = trip_sessions[0] if trip_sessions else None
         brutto = trip.entry_measurement.weight_brutto if trip.entry_measurement else None
         tare = trip.exit_measurement.weight_tare if trip.exit_measurement else None
@@ -202,22 +174,4 @@ async def get_control_history(
                 ),
             }
         )
-        item = items[-1]
-        logger.info(
-            "CONTROL_HISTORY FINAL_ITEM trip_id=%s lidar=%r sessions_count=%s",
-            item.get("trip_id"),
-            item.get("lidar"),
-            item.get("sessions_count"),
-        )
-    logger.info(
-        "CONTROL_HISTORY FINAL_RESPONSE=%s",
-        [
-            {
-                "trip_id": item.get("trip_id"),
-                "lidar": item.get("lidar"),
-                "sessions_count": item.get("sessions_count"),
-            }
-            for item in items
-        ],
-    )
     return {"items": items}
