@@ -1,8 +1,8 @@
-import {fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {afterEach,describe,expect,it,vi} from "vitest";
 import {FuelQualityPage} from "./FuelQualityPage";
 
-afterEach(()=>{vi.restoreAllMocks();});
+afterEach(()=>{cleanup();vi.restoreAllMocks();});
 describe("fuel quality process",()=>{
  it("creates a draft form and previews the PDF calculation",async()=>{
   vi.spyOn(globalThis,"fetch").mockImplementation(async input=>String(input).includes("calculate")
@@ -23,9 +23,14 @@ describe("fuel quality process",()=>{
    updated_at:"2026-08-08T00:00:00Z",wr_percent:"11.99",wa_percent:"2.06",aa_percent:"11.72",sa_percent:"0.37",va_percent:"33.88",
    calculated:{wr_percent:"11.99",wa_percent:"2.06",aa_percent:"11.72",ar_percent:"10.53",ad_percent:"11.97",va_percent:"33.88",vdaf_percent:"39.29",vr_percent:"30.44",sa_percent:"0.37",sr_percent:"0.33",sd_percent:"0.38",qi_r_kcal_kg:"5910"}};
   vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({items:[item],total:1}),{status:200,headers:{"Content-Type":"application/json"}}));
-  render(<FuelQualityPage/>);
+ render(<FuelQualityPage/>);
+  const scrollTo=vi.spyOn(window,"scrollTo");
   const badge=await screen.findByText("Импорт Excel");fireEvent.click(badge.closest("tr")!);
   const note=screen.getByText("Исходные данные отсутствуют — исторический импорт");
   expect(note.closest("section")?.querySelector("input")).toBeNull();
+  expect(screen.getByTestId("fuel-analyses")).toBeTruthy();expect(screen.getByTestId("fuel-detail")).toBeTruthy();
+  expect(badge.closest("tr")?.classList.contains("is-selected")).toBe(true);
+  expect(screen.getByRole("heading",{name:"Ежесуточный контроль 01.07.2026"})).toBeTruthy();
+  expect(scrollTo).not.toHaveBeenCalled();
  });
 });
