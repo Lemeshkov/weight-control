@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
@@ -111,3 +111,45 @@ class LabAuditLog(Base):
     new_values = Column(JSON().with_variant(JSONB, "postgresql"))
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
     experiment = relationship("LabExperiment", back_populates="audit_entries")
+
+
+class LabFuelQualityTest(Base):
+    __tablename__ = "lab_fuel_quality_tests"
+    id = Column(Integer, primary_key=True)
+    sample_date = Column(Date, nullable=False, index=True)
+    sample_name = Column(String(255), nullable=False, index=True)
+    calorimeter = Column(String(100), nullable=False)
+    sa_percent = Column(Numeric(9, 4), nullable=False)
+    alpha = Column(Numeric(12, 8), nullable=False)
+    wa_percent = Column(Numeric(9, 4), nullable=False)
+    aa_percent = Column(Numeric(9, 4), nullable=False)
+    wr_percent = Column(Numeric(9, 4), nullable=False)
+    hydrogen_input_percent = Column(Numeric(9, 4), nullable=False)
+    qb_a_1_kcal_kg = Column(Numeric(14, 2), nullable=False)
+    qb_a_2_kcal_kg = Column(Numeric(14, 2), nullable=False)
+    va_percent = Column(Numeric(9, 4), nullable=False)
+    status = Column(Enum(LabExperimentStatus, name="lab_experiment_status", create_type=False), nullable=False, default=LabExperimentStatus.DRAFT, index=True)
+    lab_technician_name = Column(String(255), nullable=False)
+    wagon_numbers = Column(String(500))
+    invoice_number = Column(String(100), index=True)
+    fuel_consumption_note = Column(Text)
+    calculation_snapshot = Column(JSON().with_variant(JSONB, "postgresql"))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+    archived_at = Column(DateTime(timezone=True))
+    created_by = Column(Integer, ForeignKey("users.id"))
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    audit_entries = relationship("LabFuelQualityAuditLog", back_populates="test", cascade="all, delete-orphan", order_by="LabFuelQualityAuditLog.created_at")
+
+
+class LabFuelQualityAuditLog(Base):
+    __tablename__ = "lab_fuel_quality_audit_log"
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    test_id = Column(Integer, ForeignKey("lab_fuel_quality_tests.id", ondelete="CASCADE"), nullable=False, index=True)
+    action = Column(String(50), nullable=False)
+    changed_by_user_id = Column(Integer, ForeignKey("users.id"))
+    changed_by_name = Column(String(255))
+    previous_values = Column(JSON().with_variant(JSONB, "postgresql"))
+    new_values = Column(JSON().with_variant(JSONB, "postgresql"))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+    test = relationship("LabFuelQualityTest", back_populates="audit_entries")

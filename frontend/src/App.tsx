@@ -3,9 +3,10 @@ import "./App.css";
 import { ControlDashboard } from "./control/ControlDashboard";
 import LidarViewer from "./components/Weighing/LidarViewer";
 import { CoalAcceptancePage } from "./acceptance/CoalAcceptancePage";
+import { LaboratoryPage } from "./laboratory/LaboratoryPage";
 
 function App() {
-  const [page, setPage] = useState<"control" | "acceptance" | "diagnostics">("control");
+  const [page, setPage] = useState<"control" | "acceptance" | "laboratory" | "diagnostics">("control");
   const navigate = (next: typeof page) => {
     if (window.dispatchEvent(new CustomEvent("app:navigate", { cancelable: true, detail: next }))) setPage(next);
   };
@@ -15,10 +16,11 @@ function App() {
       <nav aria-label="Основная навигация">
         <button className={page === "control" ? "active" : ""} onClick={() => navigate("control")}>Контроль проезда</button>
         <button className={page === "acceptance" ? "active" : ""} onClick={() => navigate("acceptance")}>Приёмка угля</button>
+        <button className={page === "laboratory" ? "active" : ""} onClick={() => navigate("laboratory")}>Лаборатория</button>
         <button className={page === "diagnostics" ? "active" : ""} onClick={() => navigate("diagnostics")}>Диагностика лидара</button>
       </nav>
     </header>
-    {page === "control" ? <ControlDashboard /> : page === "acceptance" ? <CoalAcceptancePage /> : <div className="diagnostics"><LidarViewer /></div>}
+    {page === "control" ? <ControlDashboard /> : page === "acceptance" ? <CoalAcceptancePage /> : page === "laboratory" ? <LaboratoryPage /> : <div className="diagnostics"><LidarViewer /></div>}
   </div>;
 }
 export default App;

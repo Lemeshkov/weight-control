@@ -1,6 +1,8 @@
 import csv
 import io
-from datetime import datetime
+import calendar
+from datetime import date, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
@@ -13,8 +15,16 @@ from database import get_db
 from schemas.laboratory import *
 from services.lab.calculations import average_density
 from services.lab.experiments import *
+from services.lab.fuel_quality import archive as archive_fuel_quality
+from services.lab.fuel_quality import complete as complete_fuel_quality
+from services.lab.fuel_quality import create as create_fuel_quality
+from services.lab.fuel_quality import get as get_fuel_quality
+from services.lab.fuel_quality import serialize as serialize_fuel_quality
+from services.lab.fuel_quality import update as update_fuel_quality
+from services.lab.fuel_quality_calculations import calculate_fuel_quality
 
 router = APIRouter(prefix="/api/v1/laboratory", tags=["laboratory"])
+RUSSIAN_MONTHS=("","январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь")
 
 
 def _create_directory(db, model, data):
@@ -58,6 +68,85 @@ def suppliers(is_active: bool | None = True, db: Session = Depends(get_db)):
 @router.post("/suppliers", response_model=SupplierRead, status_code=201)
 def create_supplier(data: SupplierCreate, db: Session = Depends(get_db)):
     return _create_directory(db, lm.Supplier, data)
+
+
+@router.post("/fuel-quality/calculate")
+def fuel_quality_calculate(data: FuelQualityCalculateRequest):
+    try: return calculate_fuel_quality(**data.model_dump())
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+
+
+@router.get("/fuel-quality")
+def fuel_quality_list(date_from: date | None=None,date_to: date | None=None,month: int | None=Query(None,ge=1,le=12),
+    year: int | None=None,status: lm.LabExperimentStatus | None=None,search: str | None=None,
+    limit:int=Query(25,ge=1,le=200),offset:int=Query(0,ge=0),db:Session=Depends(get_db)):
+    query=db.query(lm.LabFuelQualityTest)
+    if year and month:
+        date_from=date(year,month,1);date_to=date(year,month,calendar.monthrange(year,month)[1])
+    if date_from: query=query.filter(lm.LabFuelQualityTest.sample_date>=date_from)
+    if date_to: query=query.filter(lm.LabFuelQualityTest.sample_date<=date_to)
+    if status: query=query.filter(lm.LabFuelQualityTest.status==status)
+    if search:
+        pattern=f"%{search}%";query=query.filter(or_(lm.LabFuelQualityTest.sample_name.ilike(pattern),lm.LabFuelQualityTest.invoice_number.ilike(pattern),lm.LabFuelQualityTest.wagon_numbers.ilike(pattern)))
+    total=query.count();rows=query.order_by(lm.LabFuelQualityTest.sample_date.desc(),lm.LabFuelQualityTest.id.desc()).offset(offset).limit(limit).all()
+    return {"items":[serialize_fuel_quality(x) for x in rows],"total":total,"limit":limit,"offset":offset}
+
+
+@router.get("/fuel-quality/export.xlsx")
+def fuel_quality_export(year:int=Query(...,ge=2000,le=2100),month:int=Query(...,ge=1,le=12),db:Session=Depends(get_db)):
+    try: from openpyxl import load_workbook
+    except ImportError as exc: raise HTTPException(503,"Excel export dependency is unavailable") from exc
+    template=Path(__file__).resolve().parents[2]/"docs"/"reference"/"Ежесуточный контроль топлива 2026.xlsx"
+    if not template.exists(): raise HTTPException(503,"Шаблон ежесуточного журнала не найден")
+    workbook=load_workbook(template);sheet=workbook[f"{month:02d}"]
+    for other in list(workbook.worksheets):
+        if other is not sheet: workbook.remove(other)
+    days=calendar.monthrange(year,month)[1]
+    sheet["A1"] = f"Качество угля технологического контроля за {RUSSIAN_MONTHS[month]} {year} г."
+    for row in range(3,34):
+        if row-2<=days: sheet.cell(row,1).value=date(year,month,row-2)
+        else: sheet.cell(row,1).value=None
+        for column in range(2,14): sheet.cell(row,column).value=None
+    rows=db.query(lm.LabFuelQualityTest).filter(lm.LabFuelQualityTest.sample_date>=date(year,month,1),
+        lm.LabFuelQualityTest.sample_date<=date(year,month,days),lm.LabFuelQualityTest.status.in_([lm.LabExperimentStatus.COMPLETED,lm.LabExperimentStatus.ARCHIVED])).order_by(lm.LabFuelQualityTest.sample_date,lm.LabFuelQualityTest.id).all()
+    for item in rows:
+        values=serialize_fuel_quality(item)["calculated"];row=item.sample_date.day+2
+        sheet.cell(row,1).value=item.sample_date
+        mapped=[item.wr_percent,item.wa_percent,item.aa_percent,values["ar_percent"],values["ad_percent"],item.va_percent,
+            values["vdaf_percent"],values["vr_percent"],item.sa_percent,values["sr_percent"],values["sd_percent"],round(float(values["qi_r_kcal_kg"]))]
+        for column,value in enumerate(mapped,2): sheet.cell(row,column).value=float(value)
+    output=io.BytesIO();workbook.save(output);output.seek(0)
+    return StreamingResponse(output,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":f'attachment; filename="fuel-quality-{year}-{month:02d}.xlsx"'})
+
+
+@router.post("/fuel-quality",status_code=201)
+def fuel_quality_create(data:FuelQualityInput,db:Session=Depends(get_db)):
+    try:return serialize_fuel_quality(create_fuel_quality(db,data))
+    except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+
+@router.get("/fuel-quality/{test_id}")
+def fuel_quality_get(test_id:int,db:Session=Depends(get_db)):return serialize_fuel_quality(get_fuel_quality(db,test_id))
+
+
+@router.put("/fuel-quality/{test_id}")
+def fuel_quality_update(test_id:int,data:FuelQualityUpdate,db:Session=Depends(get_db)):
+    try:return serialize_fuel_quality(update_fuel_quality(db,get_fuel_quality(db,test_id),data))
+    except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+
+@router.post("/fuel-quality/{test_id}/complete")
+def fuel_quality_complete(test_id:int,db:Session=Depends(get_db)):return serialize_fuel_quality(complete_fuel_quality(db,get_fuel_quality(db,test_id)))
+
+
+@router.post("/fuel-quality/{test_id}/archive")
+def fuel_quality_archive(test_id:int,db:Session=Depends(get_db)):return serialize_fuel_quality(archive_fuel_quality(db,get_fuel_quality(db,test_id)))
+
+
+@router.get("/fuel-quality/{test_id}/audit-log")
+def fuel_quality_audit(test_id:int,db:Session=Depends(get_db)):
+    get_fuel_quality(db,test_id);return db.query(lm.LabFuelQualityAuditLog).filter(lm.LabFuelQualityAuditLog.test_id==test_id).order_by(lm.LabFuelQualityAuditLog.created_at).all()
 
 
 @router.post("/experiments", response_model=ExperimentRead, status_code=201)

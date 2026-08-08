@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -181,3 +181,51 @@ class AuditRead(ORMModel):
     previous_values: dict[str, Any] | None
     new_values: dict[str, Any] | None
     created_at: datetime
+
+
+class FuelQualityInput(BaseModel):
+    sample_date: date
+    sample_name: str = Field(min_length=1, max_length=255)
+    calorimeter: str = Field(min_length=1, max_length=100)
+    sa_percent: Decimal = Field(ge=0, lt=100)
+    alpha: Decimal = Field(ge=0)
+    wa_percent: Decimal = Field(ge=0, lt=100)
+    aa_percent: Decimal = Field(ge=0, lt=100)
+    wr_percent: Decimal = Field(ge=0, lt=100)
+    hydrogen_input_percent: Decimal = Field(ge=0, lt=100)
+    qb_a_1_kcal_kg: Decimal = Field(gt=0)
+    qb_a_2_kcal_kg: Decimal = Field(gt=0)
+    va_percent: Decimal = Field(ge=0, lt=100)
+    lab_technician_name: str = Field(min_length=1, max_length=255)
+    wagon_numbers: str | None = Field(default=None, max_length=500)
+    invoice_number: str | None = Field(default=None, max_length=100)
+    fuel_consumption_note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_denominators(self):
+        if Decimal("100") - self.wa_percent - self.aa_percent <= 0:
+            raise ValueError("100 - Wa - Aa must be greater than zero")
+        return self
+
+
+class FuelQualityUpdate(FuelQualityInput):
+    expected_updated_at: datetime | None = None
+
+
+class FuelQualityCalculateRequest(BaseModel):
+    sa_percent: Decimal = Field(ge=0, lt=100)
+    alpha: Decimal = Field(ge=0)
+    wa_percent: Decimal = Field(ge=0, lt=100)
+    aa_percent: Decimal = Field(ge=0, lt=100)
+    wr_percent: Decimal = Field(ge=0, lt=100)
+    hydrogen_input_percent: Decimal = Field(ge=0, lt=100)
+    qb_a_1_kcal_kg: Decimal = Field(gt=0)
+    qb_a_2_kcal_kg: Decimal = Field(gt=0)
+    va_percent: Decimal = Field(ge=0, lt=100)
+
+
+class FuelQualityListResponse(BaseModel):
+    items: list[dict[str, Any]]
+    total: int
+    limit: int
+    offset: int
