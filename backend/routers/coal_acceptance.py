@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import and_, func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from config import settings
@@ -42,6 +42,8 @@ def _item(trip):
         "entry_time": trip.entry_time, "exit_time": trip.exit_time,
         "acceptance_time_local": local, "acceptance_time_moscow": moscow,
         "contract_date": contract_date(local), "actual_net_weight_t": actual,
+        "brutto_weight_kg": None if not trip.entry_measurement else trip.entry_measurement.weight_brutto,
+        "tare_weight_kg": None if not trip.exit_measurement else trip.exit_measurement.weight_tare,
         "weight_stable": bool(lidar and lidar.stable_weight_at),
         "lidar": None if not lidar else {"status": lidar.status, "profiles_count": lidar.profiles_count, "volume_status": lidar.volume_status, "estimated_volume_m3": lidar.estimated_volume_m3},
         "acceptance": None if not a else {**_plain(a), "id": a.id, "status": a.status.value, "updated_at": a.updated_at,
@@ -71,15 +73,21 @@ def _audit(db, a, action, before, operator):
 
 
 @router.get("/queue")
-def queue(db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), date_from: date | None = None, date_to: date | None = None, status: str | None = None, plate: str | None = None, supplier_id: int | None = None, coal_grade_id: int | None = None):
+def queue(db: Session = Depends(get_db), page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), date_from: date | None = None, date_to: date | None = None, status: str | None = None, plate: str | None = None, invoice_number: str | None = None, supplier_id: int | None = None, coal_grade_id: int | None = None):
     today = date.today(); date_from = date_from or today; date_to = date_to or today
     q = _query(db).outerjoin(CoalAcceptance).outerjoin(Vehicle).filter(Trip.entry_time >= datetime.combine(date_from, datetime.min.time()), Trip.entry_time < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
     if status == "WAITING": q = q.filter(CoalAcceptance.id.is_(None))
     elif status in ("DRAFT", "COMPLETED"): q = q.filter(CoalAcceptance.status == CoalAcceptanceStatus(status))
-    if plate: q = q.filter(or_(Vehicle.plate_number.ilike(f"%{plate}%"), func.cast(Trip.id, __import__('sqlalchemy').String).ilike(f"%{plate}%"), CoalAcceptance.transport_invoice_number.ilike(f"%{plate}%")))
+    if plate: q = q.filter(Vehicle.plate_number.ilike(f"%{plate}%"))
+    if invoice_number: q = q.filter(CoalAcceptance.transport_invoice_number.ilike(f"%{invoice_number}%"))
     if supplier_id: q = q.filter(CoalAcceptance.supplier_id == supplier_id)
     if coal_grade_id: q = q.filter(CoalAcceptance.coal_grade_id == coal_grade_id)
-    total = q.order_by(None).count(); trips = q.order_by(CoalAcceptance.id.isnot(None), Trip.entry_time.desc()).offset((page-1)*page_size).limit(page_size).all()
+    status_order = case(
+        (CoalAcceptance.id.is_(None), 0),
+        (CoalAcceptance.status == CoalAcceptanceStatus.DRAFT, 1),
+        else_=2,
+    )
+    total = q.order_by(None).count(); trips = q.order_by(status_order, Trip.entry_time.desc()).offset((page-1)*page_size).limit(page_size).all()
     return {"items": [_item(x) for x in trips], "page": page, "page_size": page_size, "total": total}
 
 
@@ -127,6 +135,7 @@ def create_acceptance(trip_id: int, payload: AcceptanceWrite, db: Session = Depe
 def update_acceptance(trip_id: int, payload: AcceptanceUpdate, db: Session = Depends(get_db)):
     trip=_get(db,trip_id); a=trip.coal_acceptance
     if not a: raise HTTPException(404,"Acceptance not found")
+    if a.status == CoalAcceptanceStatus.COMPLETED: raise HTTPException(409,"Completed acceptance is read-only")
     expected=payload.expected_updated_at
     current=a.updated_at
     if current.tzinfo is None and expected.tzinfo is not None: expected=expected.replace(tzinfo=None)

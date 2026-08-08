@@ -1,5 +1,6 @@
 ﻿from datetime import datetime
 from decimal import Decimal
+from io import BytesIO
 
 import pytest
 from fastapi import FastAPI
@@ -37,6 +38,9 @@ def test_excel_calculation_and_contract_boundary():
     assert result["allowed_difference_t"] == Decimal("0.450")
     assert contract_date(datetime(2026,8,7,7,59)).isoformat()=="2026-08-06"
     assert contract_date(datetime(2026,8,7,8,0)).isoformat()=="2026-08-07"
+    assert calculate(Decimal("31.000"),Decimal("30.000"),Decimal("0.015"))["excess_t"] == Decimal("1.000")
+    assert calculate(Decimal("29.000"),Decimal("30.000"),Decimal("0.015"))["shortage_t"] == Decimal("1.000")
+    assert calculate(Decimal("29.700"),Decimal("30.000"),Decimal("0.015"))["shortage_t"] == Decimal("0.000")
 
 
 def test_trip_queue_crud_complete_and_export(client):
@@ -50,6 +54,21 @@ def test_trip_queue_crud_complete_and_export(client):
     done=client.post(f"/api/coal-acceptance/{trip['trip_id']}/complete",json={"expected_updated_at":stamp})
     assert done.status_code==200 and done.json()["status"]=="COMPLETED"
     export=client.get("/api/coal-acceptance/export.xlsx"); assert export.status_code==200 and export.content[:2]==b"PK"
+    from openpyxl import load_workbook
+    workbook=load_workbook(BytesIO(export.content),data_only=False)
+    sheet=workbook["Приёмка угля"]
+    assert sheet.max_column == 23 and sheet.auto_filter.ref == "A1:W2"
+    assert sheet["G2"].data_type == "f" and sheet["W2"].data_type == "f"
+
+
+def test_stale_update_is_rejected(client):
+    payload={"shipment_date":"2026-08-07","act_number":"A-1","transport_invoice_number":"TN-1","document_net_weight_t":"31.520","supplier_id":1,"coal_grade_id":1,"receiver_name":"Оператор"}
+    created=client.post("/api/coal-acceptance/1",json=payload).json()
+    stamp=created["acceptance"]["updated_at"]
+    changed=client.put("/api/coal-acceptance/1",json={**payload,"act_number":"A-2","expected_updated_at":stamp})
+    assert changed.status_code == 200
+    stale=client.put("/api/coal-acceptance/1",json={**payload,"act_number":"A-3","expected_updated_at":stamp})
+    assert stale.status_code == 409
 
 
 def test_actual_weight_cannot_be_overridden(client):

@@ -24,8 +24,8 @@ def calculate(actual: Decimal | None, document: Decimal | None, tolerance: Decim
     difference = mass(actual - document)
     allowed = mass(document * tolerance)
     absolute = abs(difference)
-    shortage = mass(0 if difference > 0 or absolute < allowed else absolute)
-    excess = mass(0 if difference < 0 or absolute > allowed else absolute)
+    shortage = mass(0 if difference >= 0 or absolute < allowed else absolute)
+    excess = mass(absolute if difference >= 0 and absolute > allowed else 0)
     accepted = mass(document - shortage + excess)
     return {"difference_t": difference, "allowed_difference_t": allowed, "shortage_t": shortage, "excess_t": excess, "accepted_weight_t": accepted}
 
