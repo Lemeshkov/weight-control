@@ -16,7 +16,7 @@ from services.camera_client import CameraClient
 from services.scale_monitor import scale_monitor
 from crud import TripCRUD, VehicleCRUD
 from config import settings
-from routers import weighing, lidar, scan_3d, camera, laboratory, control, coal_acceptance
+from routers import weighing, lidar, scan_3d, camera, control, coal_acceptance
 from services.lidar_profile_buffer import lidar_profile_buffer
 from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 
@@ -98,7 +98,6 @@ app.include_router(weighing.router)
 app.include_router(lidar.router)
 app.include_router(scan_3d.router)
 app.include_router(camera.router)
-app.include_router(laboratory.router)
 app.include_router(control.router)
 app.include_router(coal_acceptance.router)
 

@@ -1,7 +1,7 @@
 import axios, { AxiosError } from "axios";
 import type { AuditEntry, CoalFraction, CoalGrade, Experiment, ExperimentFilters, ExperimentListResponse, ExperimentPayload, Measurement, MeasurementInput, Supplier } from "./types";
 
-const baseURL = (import.meta.env.VITE_LAB_API_URL as string | undefined)?.replace(/\/$/, "") || "http://localhost:8001";
+const baseURL = (import.meta.env.VITE_LAB_API_URL as string | undefined)?.replace(/\/$/, "") || "";
 
 const client = axios.create({ baseURL, headers: { "Content-Type": "application/json" }, timeout: 15000 });
 
