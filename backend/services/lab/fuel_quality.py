@@ -33,6 +33,8 @@ def calculation(item):
 
 def serialize(item):
     return {"id":item.id,**_inputs(item),"status":item.status.value,
+        "source":item.source,"source_file":item.source_file,"source_sheet":item.source_sheet,
+        "legacy_import_key":item.legacy_import_key,
         "calculated":{key:_json_value(value) for key,value in calculation(item).items()},
         "created_at":item.created_at,"updated_at":item.updated_at,"archived_at":item.archived_at}
 
@@ -40,6 +42,15 @@ def serialize(item):
 def _audit(db, item, action, previous=None, new=None):
     db.add(lm.LabFuelQualityAuditLog(test_id=item.id,action=action,changed_by_user_id=item.updated_by,
         changed_by_name=item.lab_technician_name,previous_values=previous,new_values=new))
+
+
+def journal_values(item):
+    values=calculation(item)
+    if item.source == "LEGACY_EXCEL":
+        return [values[key] for key in ("wr_percent","wa_percent","aa_percent","ar_percent","ad_percent",
+            "va_percent","vdaf_percent","vr_percent","sa_percent","sr_percent","sd_percent","qi_r_kcal_kg")]
+    return [item.wr_percent,item.wa_percent,item.aa_percent,values["ar_percent"],values["ad_percent"],item.va_percent,
+        values["vdaf_percent"],values["vr_percent"],item.sa_percent,values["sr_percent"],values["sd_percent"],values["qi_r_kcal_kg"]]
 
 
 def create(db:Session, payload):
@@ -75,6 +86,7 @@ def complete(db:Session,item):
 
 
 def archive(db:Session,item):
+    if item.source == "LEGACY_EXCEL": raise HTTPException(409,"Исторический импорт доступен только для чтения")
     if item.status != lm.LabExperimentStatus.COMPLETED: raise HTTPException(409,"Архивировать можно только завершённый анализ")
     item.status=lm.LabExperimentStatus.ARCHIVED;item.archived_at=datetime.now(timezone.utc);item.updated_at=datetime.now(timezone.utc)
     _audit(db,item,"ARCHIVE",{"status":"COMPLETED"},{"status":"ARCHIVED"});db.commit();db.refresh(item);return item

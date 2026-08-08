@@ -19,6 +19,7 @@ from services.lab.fuel_quality import archive as archive_fuel_quality
 from services.lab.fuel_quality import complete as complete_fuel_quality
 from services.lab.fuel_quality import create as create_fuel_quality
 from services.lab.fuel_quality import get as get_fuel_quality
+from services.lab.fuel_quality import journal_values as fuel_quality_journal_values
 from services.lab.fuel_quality import serialize as serialize_fuel_quality
 from services.lab.fuel_quality import update as update_fuel_quality
 from services.lab.fuel_quality_calculations import calculate_fuel_quality
@@ -110,11 +111,10 @@ def fuel_quality_export(year:int=Query(...,ge=2000,le=2100),month:int=Query(...,
     rows=db.query(lm.LabFuelQualityTest).filter(lm.LabFuelQualityTest.sample_date>=date(year,month,1),
         lm.LabFuelQualityTest.sample_date<=date(year,month,days),lm.LabFuelQualityTest.status.in_([lm.LabExperimentStatus.COMPLETED,lm.LabExperimentStatus.ARCHIVED])).order_by(lm.LabFuelQualityTest.sample_date,lm.LabFuelQualityTest.id).all()
     for item in rows:
-        values=serialize_fuel_quality(item)["calculated"];row=item.sample_date.day+2
+        mapped=fuel_quality_journal_values(item);row=item.sample_date.day+2
         sheet.cell(row,1).value=item.sample_date
-        mapped=[item.wr_percent,item.wa_percent,item.aa_percent,values["ar_percent"],values["ad_percent"],item.va_percent,
-            values["vdaf_percent"],values["vr_percent"],item.sa_percent,values["sr_percent"],values["sd_percent"],round(float(values["qi_r_kcal_kg"]))]
-        for column,value in enumerate(mapped,2): sheet.cell(row,column).value=float(value)
+        for column,value in enumerate(mapped,2):
+            sheet.cell(row,column).value=round(float(value)) if column == 13 else float(value)
     output=io.BytesIO();workbook.save(output);output.seek(0)
     return StreamingResponse(output,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition":f'attachment; filename="fuel-quality-{year}-{month:02d}.xlsx"'})

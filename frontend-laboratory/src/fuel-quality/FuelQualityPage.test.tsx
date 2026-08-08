@@ -14,6 +14,18 @@ describe("fuel quality process",()=>{
   await waitFor(()=>expect(screen.getAllByText("5910.18").length).toBeGreaterThan(0));
   expect((screen.getByLabelText(/Sa/) as HTMLInputElement).value).toBe("0.37");
   expect((screen.getByRole("button",{name:"Завершить"}) as HTMLButtonElement).disabled).toBe(false);
-  expect(screen.getByRole("link",{name:"Экспорт Excel"}).getAttribute("href")).toContain("/api/v1/laboratory/fuel-quality/export.xlsx");
+ expect(screen.getByRole("link",{name:"Экспорт Excel"}).getAttribute("href")).toContain("/api/v1/laboratory/fuel-quality/export.xlsx");
+ });
+
+ it("marks a legacy Excel row and does not render missing raw inputs",async()=>{
+  const item={id:1,sample_date:"2026-07-01",sample_name:"Ежесуточный контроль 01.07.2026",calorimeter:null,
+   status:"COMPLETED",source:"LEGACY_EXCEL",source_file:"Ежесуточный контроль топлива 2026.xlsx",source_sheet:"07",
+   updated_at:"2026-08-08T00:00:00Z",wr_percent:"11.99",wa_percent:"2.06",aa_percent:"11.72",sa_percent:"0.37",va_percent:"33.88",
+   calculated:{wr_percent:"11.99",wa_percent:"2.06",aa_percent:"11.72",ar_percent:"10.53",ad_percent:"11.97",va_percent:"33.88",vdaf_percent:"39.29",vr_percent:"30.44",sa_percent:"0.37",sr_percent:"0.33",sd_percent:"0.38",qi_r_kcal_kg:"5910"}};
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({items:[item],total:1}),{status:200,headers:{"Content-Type":"application/json"}}));
+  render(<FuelQualityPage/>);
+  const badge=await screen.findByText("Импорт Excel");fireEvent.click(badge.closest("tr")!);
+  const note=screen.getByText("Исходные данные отсутствуют — исторический импорт");
+  expect(note.closest("section")?.querySelector("input")).toBeNull();
  });
 });

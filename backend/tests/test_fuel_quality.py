@@ -1,19 +1,22 @@
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 import models  # noqa: F401 - register shared users table in SQLAlchemy metadata
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
+from openpyxl import Workbook,load_workbook
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import Base,get_db
+import lab_models as lm
 from routers.laboratory import router
 from services.lab.fuel_quality_calculations import calculate_fuel_quality
+from services.lab.fuel_quality_history_import import LegacyImportError, import_legacy_rows
 
 PDF_INPUT={"sa_percent":"0.37","alpha":"0.0015","wa_percent":"2.06","aa_percent":"11.72","wr_percent":"11.99",
     "hydrogen_input_percent":"5.56","qb_a_1_kcal_kg":"6923.00","qb_a_2_kcal_kg":"6924.00","va_percent":"33.88"}
@@ -78,3 +81,52 @@ def test_excel_export_valid_month_lengths_and_mapping(client,month,days):
     assert "A1:M1" in {str(x) for x in sheet.merged_cells.ranges}
     assert sheet.column_dimensions["A"].width and sheet["B2"].alignment.wrap_text
     if month==1: assert [sheet.cell(3,c).value for c in range(2,14)]==[11.99,2.06,11.72,10.53,11.97,33.88,39.29,30.44,0.37,0.33,0.38,5910]
+
+
+def test_historical_july_import_dry_run_apply_idempotency_and_export(client):
+    api,Session=client
+    source=Path(__file__).resolve().parents[2]/"docs"/"reference"/"Ежесуточный контроль топлива 2026.xlsx"
+    db=Session()
+    preview=import_legacy_rows(db,source,2026,7)
+    assert (preview.found,preview.existing,preview.imported,preview.dry_run)==(31,0,0,True)
+    assert db.query(lm.LabFuelQualityTest).count()==0
+    applied=import_legacy_rows(db,source,2026,7,apply=True)
+    assert (applied.found,applied.existing,applied.imported)==(31,0,31)
+    repeated=import_legacy_rows(db,source,2026,7,apply=True)
+    assert (repeated.existing,repeated.imported)==(31,0)
+    rows=db.query(lm.LabFuelQualityTest).order_by(lm.LabFuelQualityTest.sample_date).all()
+    assert [row.sample_date for row in rows]==[date(2026,7,day) for day in range(1,32)]
+    first=rows[0]
+    assert first.source=="LEGACY_EXCEL" and first.status==lm.LabExperimentStatus.COMPLETED
+    assert first.alpha is None and first.hydrogen_input_percent is None and first.qb_a_1_kcal_kg is None
+    assert first.calculation_snapshot["qi_r_kcal_kg"]=="5910"
+    assert db.query(lm.LabFuelQualityAuditLog).filter_by(action="IMPORT_EXCEL").count()==31
+    db.close()
+    listing=api.get("/api/v1/laboratory/fuel-quality",params={"year":2026,"month":7,"limit":200}).json()
+    assert listing["total"]==31 and all(item["source"]=="LEGACY_EXCEL" for item in listing["items"])
+    assert api.put(f"/api/v1/laboratory/fuel-quality/{first.id}",json=PAYLOAD).status_code==409
+    assert api.post(f"/api/v1/laboratory/fuel-quality/{first.id}/archive").status_code==409
+    exported=load_workbook(BytesIO(api.get("/api/v1/laboratory/fuel-quality/export.xlsx",params={"year":2026,"month":7}).content),data_only=True)["07"]
+    original=load_workbook(source,read_only=True,data_only=True)["07"]
+    for row in range(3,34):
+        assert [exported.cell(row,column).value for column in range(1,14)]==[original.cell(row,column).value for column in range(1,14)]
+
+
+def test_historical_import_invalid_row_rolls_back(client,tmp_path):
+    _,Session=client
+    path=tmp_path/"invalid.xlsx";workbook=Workbook();sheet=workbook.active;sheet.title="07"
+    sheet.append([]);sheet.append([])
+    sheet.append([date(2026,7,1),11.99,2.06,11.72,10.53,11.97,33.88,39.29,30.44,.37,.33,.38,5910])
+    sheet.append([date(2026,7,2),12,"bad",11,10,12,34,40,30,.4,.3,.4,5900]);workbook.save(path)
+    db=Session()
+    with pytest.raises(LegacyImportError,match="столбец C"):
+        import_legacy_rows(db,path,2026,7,apply=True)
+    assert db.query(lm.LabFuelQualityTest).count()==0
+
+
+def test_manual_api_stays_strict_and_defaults_source(client):
+    api,_=client
+    invalid={key:value for key,value in PAYLOAD.items() if key!="alpha"}
+    assert api.post("/api/v1/laboratory/fuel-quality",json=invalid).status_code==422
+    created=api.post("/api/v1/laboratory/fuel-quality",json=PAYLOAD)
+    assert created.status_code==201 and created.json()["source"]=="MANUAL"
