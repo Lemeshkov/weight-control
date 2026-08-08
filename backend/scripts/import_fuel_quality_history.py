@@ -7,6 +7,9 @@ PROJECT_DIR = BACKEND_DIR.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from database import SessionLocal  # noqa: E402
+# Register the shared and laboratory ORM tables in the same Base.metadata.
+# This mirrors laboratory_main startup and is required to resolve users.id FKs.
+import models  # noqa: E402,F401
 from services.lab.fuel_quality_history_import import LegacyImportError, import_legacy_rows  # noqa: E402
 
 
