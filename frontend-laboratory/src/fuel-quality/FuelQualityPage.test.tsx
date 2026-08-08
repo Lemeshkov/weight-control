@@ -1,8 +1,8 @@
 import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {afterEach,describe,expect,it,vi} from "vitest";
-import {FuelQualityPage} from "./FuelQualityPage";
+import {DEFAULT_SPLIT_RATIO,FuelQualityPage} from "./FuelQualityPage";
 
-afterEach(()=>{cleanup();vi.restoreAllMocks();});
+afterEach(()=>{cleanup();localStorage.clear();vi.restoreAllMocks();});
 describe("fuel quality process",()=>{
  it("creates a draft form and previews the PDF calculation",async()=>{
   vi.spyOn(globalThis,"fetch").mockImplementation(async input=>String(input).includes("calculate")
@@ -32,5 +32,25 @@ describe("fuel quality process",()=>{
   expect(badge.closest("tr")?.classList.contains("is-selected")).toBe(true);
   expect(screen.getByRole("heading",{name:"Ежесуточный контроль 01.07.2026"})).toBeTruthy();
   expect(scrollTo).not.toHaveBeenCalled();
+ });
+
+ it("resizes the split with pointer events and clamps it to 25–70 percent",()=>{
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({items:[],total:0}),{status:200,headers:{"Content-Type":"application/json"}}));
+  render(<FuelQualityPage/>);const separator=screen.getByRole("separator");const work=separator.parentElement!;
+  expect(separator.getAttribute("aria-valuenow")).toBe(String(DEFAULT_SPLIT_RATIO));expect(work.style.gridTemplateColumns).toContain("62fr");
+  vi.spyOn(work,"getBoundingClientRect").mockReturnValue({left:0,width:1000,top:0,right:1000,bottom:600,height:600,x:0,y:0,toJSON:()=>({})});
+  fireEvent.pointerDown(separator,{pointerId:1});fireEvent(separator,new MouseEvent("pointermove",{bubbles:true,clientX:900}));
+  expect(separator.getAttribute("aria-valuenow")).toBe("70");expect(localStorage.getItem("laboratory:fuel-quality:split-ratio")).toBe("70");
+  fireEvent(separator,new MouseEvent("pointermove",{bubbles:true,clientX:100}));fireEvent.pointerUp(separator,{pointerId:1});
+  expect(separator.getAttribute("aria-valuenow")).toBe("25");
+ });
+
+ it("restores, changes by keyboard and resets the split to 62 percent",()=>{
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({items:[],total:0}),{status:200,headers:{"Content-Type":"application/json"}}));
+  localStorage.setItem("laboratory:fuel-quality:split-ratio","66");const view=render(<FuelQualityPage/>);let separator=screen.getByRole("separator");
+  expect(separator.getAttribute("aria-valuenow")).toBe("66");fireEvent.keyDown(separator,{key:"ArrowLeft"});expect(separator.getAttribute("aria-valuenow")).toBe("64");
+  view.unmount();render(<FuelQualityPage/>);separator=screen.getByRole("separator");expect(separator.getAttribute("aria-valuenow")).toBe("64");
+  fireEvent.doubleClick(separator);expect(separator.getAttribute("aria-valuenow")).toBe("62");expect(localStorage.getItem("laboratory:fuel-quality:split-ratio")).toBe("62");
+  cleanup();localStorage.setItem("laboratory:fuel-quality:split-ratio","invalid");render(<FuelQualityPage/>);expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("62");
  });
 });
