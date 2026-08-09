@@ -8,6 +8,7 @@ from typing import Optional
 from config import settings
 from services.lidar_pass_storage import AtomicLidarPassStorage, lidar_pass_storage
 from services.lidar_profile_buffer import LidarProfile, LidarProfileBuffer, lidar_profile_buffer
+from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
 from services.lidar_session_repository import (
     InMemoryLidarSessionRepository,
     LidarSessionRepository,
@@ -266,6 +267,20 @@ class WeighingLidarCoordinator:
         self._current_lifecycle_token = session.session_key
         self._last_logged_fsm = None
         self._reset_stable_counter("new_session", session, snapshot)
+        diagnostic_recorder.start(
+            session.session_key,
+            started_at=session.started_at.isoformat(),
+            camera_config={
+                "type": settings.CAMERA_TYPE,
+                "ip": settings.CAMERA_IP,
+                "port": settings.CAMERA_PORT,
+                "mode": "existing CameraClient JPEG frames",
+            },
+        )
+        diagnostic_recorder.record_event(
+            "SESSION_OPENED", scale_state=snapshot["state_name"],
+            weight_kg=snapshot["massa"], stable=snapshot["stabil"],
+        )
         await self._create_repository_record(session)
 
     async def _finish_after_delay(self, session_key: str) -> None:
@@ -316,6 +331,13 @@ class WeighingLidarCoordinator:
                 session.error_message = f"json_write_failed:{type(exc).__name__}: {exc}"
             await self._update_repository(session)
         self.last_session = session
+        diagnostic_recorder.record_event(
+            "SESSION_FINALIZED", coordinator_status=session.status,
+            workflow_state=session.workflow_state,
+        )
+        diagnostic_recorder.stop_in_background(
+            ended_at=session.completed_at.isoformat() if session.completed_at else None,
+        )
         self.active_session = None
         self._stable_samples = 0
         self._empty_samples = 0
@@ -338,6 +360,10 @@ class WeighingLidarCoordinator:
 
             session = self.active_session
             if session is not None:
+                diagnostic_recorder.record_event(
+                    "SCALE_SNAPSHOT", scale_state=state_name, weight_kg=snapshot["massa"],
+                    stable=snapshot["stabil"], state_changed=state_changed,
+                )
                 self._last_stable_sample_at = now
                 self._log_fsm(session, snapshot)
                 self._sync_profiles(session)
@@ -356,6 +382,10 @@ class WeighingLidarCoordinator:
                 if workflow_state and workflow_state != session.workflow_state:
                     session.workflow_state = workflow_state
                     session.state_timestamps[workflow_state] = now.isoformat()
+                    diagnostic_recorder.record_event(
+                        "COORDINATOR_TRANSITION", workflow_state=workflow_state,
+                        scale_state=state_name,
+                    )
 
                 if state_name in {"ReadyWeighing", "WeighingComplete"} and session.recording:
                     reset_reason = (
@@ -390,6 +420,10 @@ class WeighingLidarCoordinator:
                         session.stable_weight_kg = snapshot["massa"]
                         session.workflow_state = "WEIGHT_CAPTURED"
                         session.state_timestamps["WEIGHT_CAPTURED"] = now.isoformat()
+                        diagnostic_recorder.record_event(
+                            "STABLE_WEIGHT", workflow_state="WEIGHT_CAPTURED",
+                            weight_kg=snapshot["massa"], stable_samples=self._stable_samples,
+                        )
                         logger.info(
                             "stable weight confirmed session=%s massa=%s stable_count=%s/%s",
                             session.session_key,
@@ -483,6 +517,7 @@ class WeighingLidarCoordinator:
                 )
                 return False
             session.trip_id = trip_id
+            diagnostic_recorder.bind_trip(trip_id)
             await self._update_repository(session)
             logger.info("Lidar session bound: session=%s trip_id=%s", session.session_key, trip_id)
             return True
@@ -548,6 +583,7 @@ class WeighingLidarCoordinator:
                 await self._finish_task
             except asyncio.CancelledError:
                 pass
+        await asyncio.to_thread(diagnostic_recorder.stop)
 
 
 weighing_lidar_coordinator = WeighingLidarCoordinator()

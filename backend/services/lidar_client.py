@@ -235,6 +235,46 @@ class LidarClient:
             logger.error(f"Ошибка парсинга: {e}")
             return []
 
+    def parse_diagnostic_scan(self, raw_data: str) -> Dict[str, Any]:
+        """Parse DIST1 losslessly, preserving every beam position."""
+        parts = raw_data.split()
+        index = parts.index("DIST1")
+        scale_factor = int(parts[index + 1], 16)
+        scale_offset = self._hex_to_signed_int(parts[index + 2])
+        start_angle_deg = self._hex_to_signed_int(parts[index + 3]) / 10000
+        angular_step_deg = int(parts[index + 4], 16) / 10000
+        beam_count = int(parts[index + 5], 16)
+        tokens = parts[index + 6:index + 6 + beam_count]
+        if len(tokens) != beam_count:
+            raise ValueError(f"DIST1 declares {beam_count} beams, received {len(tokens)}")
+        raw_ranges = [self._hex_to_signed_int(token) for token in tokens]
+        valid_mask = [self.MIN_VALID_DISTANCE <= value <= self.MAX_VALID_DISTANCE for value in raw_ranges]
+        ranges_mm = [value if valid else None for value, valid in zip(raw_ranges, valid_mask)]
+        scan_frequency_hz = None
+        measurement_frequency_hz = None
+        # CoLa LMDscandata header fields are in 1/100 Hz. Minimal telegrams may
+        # begin at DIST1; unknown values deliberately remain null.
+        if index >= 17:
+            try:
+                scan_frequency_hz = int(parts[15], 16) / 100
+                measurement_frequency_hz = int(parts[16], 16) / 100
+            except ValueError:
+                pass
+        return {
+            "start_angle_deg": start_angle_deg,
+            "end_angle_deg": start_angle_deg + max(beam_count - 1, 0) * angular_step_deg,
+            "angular_step_deg": angular_step_deg,
+            "beam_count": beam_count,
+            "scale_factor_raw": scale_factor,
+            "scale_offset_raw": scale_offset,
+            "native_scan_frequency_hz": scan_frequency_hz,
+            "measurement_frequency_hz": measurement_frequency_hz,
+            "ranges_raw": raw_ranges,
+            "ranges_mm": ranges_mm,
+            "valid_mask": valid_mask,
+            "source": "LMDscandata.DIST1",
+        }
+
     def get_scan_geometry(self, raw_data: str) -> Dict[str, Any]:
         """Read angular geometry directly from DIST1 metadata."""
         try:

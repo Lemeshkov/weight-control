@@ -3,7 +3,7 @@
 import logging
 import time
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Thread, Event, Lock
 import requests
 from requests.auth import HTTPDigestAuth
@@ -51,6 +51,20 @@ class CameraClient:
         self._http = requests.Session()
         # The camera is on the LAN; environment proxies can intercept local requests.
         self._http.trust_env = False
+        self._frame_sequence = 0
+        self._last_frame_monotonic_ns = 0
+        self._frame_listeners = []
+
+    def add_frame_listener(self, listener) -> None:
+        """Subscribe to already captured frames; this never starts another capture loop."""
+        with self._frame_lock:
+            if listener not in self._frame_listeners:
+                self._frame_listeners.append(listener)
+
+    def remove_frame_listener(self, listener) -> None:
+        with self._frame_lock:
+            if listener in self._frame_listeners:
+                self._frame_listeners.remove(listener)
 
     def _publish_frame(self, frame: np.ndarray) -> bool:
         """Encode once in the capture thread and publish the latest JPEG."""
@@ -66,12 +80,31 @@ class CameraClient:
             if not ok:
                 return False
             jpeg = buffer.tobytes()
-            captured_at = datetime.now()
+            captured_at = datetime.now(timezone.utc)
+            captured_monotonic_ns = max(time.monotonic_ns(), self._last_frame_monotonic_ns + 1)
+            self._last_frame_monotonic_ns = captured_monotonic_ns
             with self._frame_lock:
+                self._frame_sequence += 1
+                sequence = self._frame_sequence
                 self._current_jpeg = jpeg
                 self._frame_width = int(frame.shape[1])
                 self._frame_height = int(frame.shape[0])
                 self.frame_timestamp = captured_at
+                listeners = list(self._frame_listeners)
+            sample = {
+                "sequence_number": sequence,
+                "captured_utc": captured_at.isoformat(),
+                "captured_monotonic_ns": captured_monotonic_ns,
+                "processing_completed_monotonic_ns": time.monotonic_ns(),
+                "jpeg": jpeg,
+                "width": int(frame.shape[1]),
+                "height": int(frame.shape[0]),
+            }
+            for listener in listeners:
+                try:
+                    listener(sample)
+                except Exception:
+                    logger.exception("Camera frame listener failed")
             return True
         except Exception as exc:
             logger.warning("Camera frame encode failed: %s", type(exc).__name__)
@@ -290,12 +323,14 @@ class CameraClient:
             width = self._frame_width
             height = self._frame_height
             timestamp = self.frame_timestamp
+            sequence = self._frame_sequence
         return {
             "timestamp": timestamp.isoformat() if timestamp else datetime.now().isoformat(),
             "data": jpeg_bytes,
             "size": len(jpeg_bytes),
             "width": width,
             "height": height,
+            "sequence_number": sequence,
         }
 
     def disconnect(self):

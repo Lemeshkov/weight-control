@@ -37,6 +37,17 @@ class Settings:
     CAMERA_PASSWORD: str = os.getenv("CAMERA_PASSWORD", "Hikvision")
     CAMERA_RTSP_PATH: str = os.getenv("CAMERA_RTSP_PATH", "/Streaming/Channels/101")
 
+    # Opt-in Camera + LiDAR research recording. Disabled by default.
+    CAMERA_LIDAR_DIAGNOSTIC_RECORDING: bool = os.getenv(
+        "CAMERA_LIDAR_DIAGNOSTIC_RECORDING", "false"
+    ).lower() in {"1", "true", "yes", "on"}
+    DIAGNOSTIC_DATA_DIR: str = os.getenv(
+        "DIAGNOSTIC_DATA_DIR", os.path.join(os.path.dirname(__file__), "data", "diagnostics")
+    )
+    DIAGNOSTIC_MAX_DURATION_SEC: int = int(os.getenv("DIAGNOSTIC_MAX_DURATION_SEC", "900"))
+    DIAGNOSTIC_QUEUE_SIZE: int = int(os.getenv("DIAGNOSTIC_QUEUE_SIZE", "500"))
+    DIAGNOSTIC_MAX_BYTES: int = int(os.getenv("DIAGNOSTIC_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+
     # File storage
     PHOTO_STORAGE_PATH: str = os.getenv("PHOTO_STORAGE_PATH", "/data/photos")
     ARCHIVE_PATH: str = os.getenv("ARCHIVE_PATH", "/data/archive")

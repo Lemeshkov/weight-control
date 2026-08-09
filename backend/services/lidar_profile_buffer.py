@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -9,6 +10,7 @@ from typing import Callable, Deque, Optional
 
 from config import settings
 from services.lidar_client import lidar_client
+from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
 
 
 logger = logging.getLogger(__name__)
@@ -129,20 +131,45 @@ class LidarProfileBuffer:
                 self.last_error = "lidar_connect_failed"
                 return None
 
+        request_started = time.monotonic_ns()
         raw_data = await asyncio.to_thread(self.client.get_scan_data)
+        response_received = time.monotonic_ns()
         if not raw_data:
             self.last_error = "lidar_scan_failed"
             return None
 
         raw_distances = await asyncio.to_thread(self.client.parse_raw_data, raw_data)
+        diagnostic_scan = None
+        if diagnostic_recorder.active:
+            diagnostic_scan = await asyncio.to_thread(self.client.parse_diagnostic_scan, raw_data)
         angle_filtered = self.client.filter_angle(raw_distances, 70)
         valid_distances = self.client.filter_valid_distances(angle_filtered)
         self.last_error = None
-        return self.add_profile(
+        profile = self.add_profile(
             valid_distances,
             points_total=len(raw_distances),
             raw_data=raw_data,
         )
+        processing_completed = time.monotonic_ns()
+        if diagnostic_scan is not None:
+            diagnostic_recorder.record_lidar({
+                "format_version": 2,
+                "sequence_number": profile.sequence_number,
+                "captured_utc": profile.captured_at,
+                "captured_monotonic_ns": response_received,
+                "request_started_monotonic_ns": request_started,
+                "response_received_monotonic_ns": response_received,
+                "processing_completed_monotonic_ns": processing_completed,
+                "acquisition_latency_ms": round((response_received - request_started) / 1_000_000, 3),
+                **diagnostic_scan,
+                "filtered": {
+                    "angle_deg": 70,
+                    "min_valid_distance_mm": self.client.MIN_VALID_DISTANCE,
+                    "max_valid_distance_mm": self.client.MAX_VALID_DISTANCE,
+                    "ranges_mm": valid_distances,
+                },
+            })
+        return profile
 
     async def _reader_loop(self) -> None:
         while self._running:

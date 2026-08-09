@@ -1,5 +1,6 @@
 # backend/routers/camera.py
 from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import asyncio
 from datetime import datetime
@@ -7,10 +8,15 @@ import logging
 import time
 from services.camera_client import CameraClient
 from config import settings
+from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/camera", tags=["camera"])
 active_stream_clients = 0
+
+
+class DiagnosticMarker(BaseModel):
+    label: str
 
 
 camera_client = CameraClient(
@@ -106,3 +112,12 @@ async def get_camera_status():
         "errors": camera_client._error_count,
         "active_stream_clients": active_stream_clients,
     }
+
+
+@router.post("/debug/diagnostics/marker")
+async def add_diagnostic_marker(marker: DiagnosticMarker):
+    """Dev/research marker; unavailable unless opt-in recording is active."""
+    label = marker.label.strip().upper()
+    if not diagnostic_recorder.marker(label):
+        raise HTTPException(status_code=409, detail="Diagnostic recording inactive or invalid marker")
+    return {"recorded": True, "label": label}
