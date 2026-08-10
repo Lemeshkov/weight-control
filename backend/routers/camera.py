@@ -31,6 +31,38 @@ camera_client = CameraClient(
     rtsp_reconnect_seconds=settings.CAMERA_RTSP_RECONNECT_SECONDS,
 )
 
+
+async def camera_mjpeg_frames(client: CameraClient, poll_interval: float = 0.05):
+    """Yield each newly published CameraClient sequence once per consumer."""
+    global active_stream_clients
+    active_stream_clients += 1
+    logger.info("Camera stream connected: active_clients=%s", active_stream_clients)
+    no_frame_since = time.monotonic()
+    last_sequence = None
+    try:
+        while True:
+            frame = client.get_frame()
+            if frame:
+                no_frame_since = time.monotonic()
+                sequence = frame.get("sequence_number")
+                if sequence != last_sequence:
+                    last_sequence = sequence
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(frame["size"]).encode("ascii") + b"\r\n"
+                        b"Cache-Control: no-store, no-cache, must-revalidate\r\n\r\n"
+                        + frame["data"]
+                        + b"\r\n"
+                    )
+            elif time.monotonic() - no_frame_since >= 3:
+                logger.warning("Camera stream closed: no frame available")
+                return
+            await asyncio.sleep(poll_interval)
+    finally:
+        active_stream_clients = max(0, active_stream_clients - 1)
+        logger.info("Camera stream disconnected: active_clients=%s", active_stream_clients)
+
 @router.on_event("startup")
 async def startup_camera():
     try:
@@ -71,36 +103,15 @@ async def get_camera_frame():
 @router.get("/stream")
 async def stream_camera():
     """Непрерывный MJPEG-поток с автоматическим ожиданием переподключения."""
-    async def frames():
-        global active_stream_clients
-        active_stream_clients += 1
-        logger.info("Camera stream connected: active_clients=%s", active_stream_clients)
-        no_frame_since = time.monotonic()
-        try:
-            while True:
-                frame = camera_client.get_frame()
-                if frame:
-                    no_frame_since = time.monotonic()
-                    yield (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(frame["size"]).encode("ascii") + b"\r\n"
-                        b"Cache-Control: no-cache\r\n\r\n"
-                        + frame["data"]
-                        + b"\r\n"
-                    )
-                elif time.monotonic() - no_frame_since >= 3:
-                    logger.warning("Camera stream closed: no frame available")
-                    return
-                await asyncio.sleep(0.2)
-        finally:
-            active_stream_clients = max(0, active_stream_clients - 1)
-            logger.info("Camera stream disconnected: active_clients=%s", active_stream_clients)
-
     return StreamingResponse(
-        frames(),
+        camera_mjpeg_frames(camera_client),
         media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={"Cache-Control": "no-store"},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
