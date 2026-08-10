@@ -1,63 +1,69 @@
 # TEST B: offline CameraMotionEstimator
 
-## Статус анализа
+Анализ выполнен на реальной локальной сессии
+`diagnostics/9fafd185315e4b8194d7b59b5afb6f39`. Production CameraClient,
+RTSP/MJPEG, coordinator, LiDAR acquisition, API, БД, frontend и volume не менялись.
 
-Реальная сессия `9fafd185315e4b8194d7b59b5afb6f39` находится на production/test server в `C:\weight-control-data\diagnostics`, но отсутствует в локальной рабочей среде Codex. Поэтому manual timestamps, detection delays, distributions, число LiDAR profiles во время STOP и итог `YES / CONDITIONALLY / NO` здесь намеренно не указаны. Synthetic tests подтверждают только helper mathematics.
+## Входные данные
 
-Production CameraClient, coordinator, LiDAR acquisition, API, БД, frontend и volume не изменялись.
+- `manifest.json`: `COMPLETED`, 173 camera frames, 123 LiDAR profiles, 2 markers;
+- `camera/frames.csv` и 173 JPEG с проверенными предыдущим анализом SHA-256;
+- `lidar/raw_scans.jsonl`;
+- `markers.jsonl`: STOPPED `866736218000000`, RESUMED `866752875000000`;
+- `camera_roi.json`: существующий polygon кузова;
+- `motion_analysis/camera_motion.csv` и `motion_analysis_roi/camera_motion.csv`.
 
-## Запуск full-frame baseline
+Ручной STOP длился 16.657 s. Перебор выполняется по quantile-derived порогам,
+stop confirmation 250–2000 ms и resume confirmation 0–1000 ms. Objective сильнее
+штрафует false STOP, но также требует оба реальных перехода и штрафует false MOVING,
+UNKNOWN и лишние transitions. Это предотвращает тривиальные always-moving/always-stopped
+решения. Всего сравниваются 17 220 конфигураций для LK/Farneback, full-frame/ROI.
 
-На сервере из `backend`:
+## Результат
+
+Лучший Farneback full-frame и ROI дали одинаковый state timeline:
+
+- stop threshold: `1.361371e-05` (full), `1.445997e-07` (ROI);
+- start threshold: `0.00887307` (full), `0.0754444` (ROI);
+- stop/resume confirmation: 2000/750 ms;
+- STOP delay: 1875 ms; RESUME delay: 15 ms;
+- false STOP: 15 ms; false MOVING: 1875 ms; UNKNOWN: 0 ms;
+- два перехода, false transitions: 0; correct time fraction: 95.63%.
+
+LK full оставил 4109 ms false STOP. LK ROI снизил false STOP до 15 ms, но получил
+4860 ms STOP delay, 1108 ms UNKNOWN и пять наблюдаемых переходов (часть из UNKNOWN).
+Следовательно ROI полезен для sparse LK, но сам по себе не решает его нестабильность.
+Исходный false STOP около 9562 ms был следствием слишком высокого автоматически
+выбранного stop threshold и короткого hysteresis, а не отсутствия движения камеры.
+
+LiDAR median absolute profile difference равен 2 mm и в MOVING, и в STOPPED
+(p90: 3 и 2 mm). Даже лучший одиночный threshold имеет ограниченную balanced accuracy;
+он не является независимым подтверждением движения на этом проезде. Fusion разумно
+оставить будущим дополнительным сигналом, но не использовать здесь как veto/источник
+истины.
+
+При camera-only policy из 123 профилей: 81 slice принят, 42 подавлены; один профиль
+ошибочно подавлен при MOVING, шесть приняты в первые 1.875 s реального STOP. Raw profiles
+при этом должны сохраняться всегда.
+
+Около 4 fps достаточно для обнаружения этого длинного STOP и быстрого RESUME, но
+квантование кадрами плюс 2 s подтверждение задаёт задержку STOP. Одного проезда
+недостаточно для production MotionProvider: нужны независимые проезды с иной скоростью,
+светом, кузовом и длительностью остановки.
+
+## Запуск
+
+Из `backend`:
 
 ```powershell
-..\venv_weight\Scripts\python.exe scripts\analyze_camera_motion.py `
-  C:\weight-control-data\diagnostics\9fafd185315e4b8194d7b59b5afb6f39
+..\venv_weight\Scripts\python.exe scripts\tune_camera_motion.py `
+  ..\diagnostics\9fafd185315e4b8194d7b59b5afb6f39
 ```
 
-Выходной каталог `motion_analysis` содержит:
+Результаты записываются в `motion_tuning/tuning_summary.json`,
+`threshold_candidates.csv` и `profile_acceptance.csv`.
 
-- `motion_summary.json`;
-- `camera_motion.csv`;
-- `lidar_motion.csv`;
-- `fusion_motion.csv`;
-- `motion_plot.png`.
-
-Analyzer проверяет два operator markers, порядок camera timestamps, наличие всех JPEG и SHA-256, затем выполняет CLAHE + sparse Lucas–Kanade, forward/backward validation, MAD outlier rejection, dominant-axis projection и experimental hysteresis. Farneback запускается как comparator; для быстрого прогона его можно отключить `--skip-farneback`.
-
-LiDAR сравнивается только по одинаковым beam indexes: common valid mask, median absolute difference, RMSE и correlation. Fusion использует простые deterministic rules; к production она не подключена.
-
-## ROI
-
-Full-frame результат — baseline, не финальная конфигурация. Выбрать representative JPEG и сохранить normalized polygon:
-
-```powershell
-..\venv_weight\Scripts\python.exe scripts\select_camera_roi.py `
-  C:\weight-control-data\diagnostics\9fafd185315e4b8194d7b59b5afb6f39\camera\frame_00000100.jpg `
-  C:\weight-control-data\diagnostics\9fafd185315e4b8194d7b59b5afb6f39\camera_roi.json
-```
-
-Левой кнопкой отметить минимум три точки, Enter сохранить, R сбросить, Esc отменить. Повторный анализ:
-
-```powershell
-..\venv_weight\Scripts\python.exe scripts\analyze_camera_motion.py `
-  C:\weight-control-data\diagnostics\9fafd185315e4b8194d7b59b5afb6f39 `
-  --roi C:\weight-control-data\diagnostics\9fafd185315e4b8194d7b59b5afb6f39\camera_roi.json `
-  --output-dir C:\weight-control-data\diagnostics\9fafd185315e4b8194d7b59b5afb6f39\motion_analysis_roi
-```
-
-## Что читать в результате
-
-`motion_summary.json` содержит manual STOP/RESUME monotonic timestamps и длительность, candidate thresholds, dominant axis, detected transitions/delays, false STOP/MOVING duration, UNKNOWN duration, moving/stopped distributions камеры и LiDAR, число profiles before/during/after STOP и CPU/distributions LK/Farneback.
-
-Около 4 fps достаточно только если LK сохраняет достаточное число tracks и нет больших inter-frame displacements. Если valid tracks систематически проваливаются именно на MOVING, следующий эксперимент должен записать 10–20 fps либо запускать estimator на internal CameraClient stream; это нельзя заключить без CSV реального прогона.
-
-Разница `events_count=67` против `manifest.record_counts.events=65` не является ошибкой recorder: базовый analyzer объединяет 65 строк `events.jsonl` и 2 строки `markers.jsonl` в общий timeline. Manifest правильно считает их раздельно.
-
-## Будущая slice policy
-
-- `MOVING`: разрешать новый spatial slice.
-- `STOPPED`: raw scan сохранять, longitudinal position не увеличивать, spatial slice не добавлять.
-- `RESUMED`: продолжать ту же reconstruction.
-
-Это только проектирование. Переход к production `MotionProvider` возможен лишь после просмотра реальных delays, false intervals и conflicts в результатах TEST B. ЭТАП 4 — согласование thresholds/ROI и feature-flagged shadow MotionProvider без влияния на production decisions; метрический `ΔY` остаётся отдельным экспериментом.
+Вывод: **CONDITIONALLY**. Камера пригодна как кандидат MotionProvider в shadow mode,
+если Farneback работает по фиксированной ROI/full-frame конфигурации с duration-based
+hysteresis, raw LiDAR не теряется во время STOP, а следующий реальный тест подтверждает
+ограничения задержки и отсутствие false STOP на нескольких условиях съёмки.
