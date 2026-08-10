@@ -65,6 +65,39 @@ def test_camera_listener_uses_same_client_and_monotonic_sequence(tmp_path):
     with (tmp_path / "camera" / "camera" / "frames.csv").open(encoding="utf-8", newline="") as handle:
         samples = list(csv.DictReader(handle))
     assert int(samples[1]["captured_monotonic_ns"]) > int(samples[0]["captured_monotonic_ns"])
+    assert all(int(row["writer_persisted_monotonic_ns"]) >= int(row["recorder_observed_monotonic_ns"]) for row in samples)
+
+
+def test_duplicate_camera_sequence_is_not_written_twice(tmp_path):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path)
+    recorder.start("duplicate", started_at="2026-08-10T00:00:00+00:00")
+    sample = {
+        "sequence_number": 7, "captured_utc": "2026-08-10T00:00:00+00:00",
+        "captured_monotonic_ns": 7, "jpeg": b"jpeg", "width": 10, "height": 10,
+    }
+    recorder.record_camera(sample)
+    recorder.record_camera(sample)
+    recorder.stop()
+    manifest = json.loads((tmp_path / "duplicate" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["record_counts"]["camera"] == 1
+    assert manifest["camera_duplicate_sequence_count"] == 1
+    assert len(list((tmp_path / "duplicate" / "camera").glob("*.jpg"))) == 1
+
+
+def test_camera_enqueue_does_not_wait_for_writer_disk_io(tmp_path):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path, queue_size=500)
+    recorder.start("camera_queue", started_at="2026-08-10T00:00:00+00:00")
+    started = time.perf_counter()
+    for sequence in range(100):
+        recorder.record_camera({
+            "sequence_number": sequence, "captured_utc": "2026-08-10T00:00:00+00:00",
+            "captured_monotonic_ns": sequence, "jpeg": b"jpeg", "width": 10, "height": 10,
+        })
+    enqueue_seconds = time.perf_counter() - started
+    recorder.stop()
+    assert enqueue_seconds < 0.5
+    manifest = json.loads((tmp_path / "camera_queue" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["record_counts"]["camera"] == 100
 
 
 def test_enqueue_path_is_non_blocking_under_normal_synthetic_load(tmp_path):

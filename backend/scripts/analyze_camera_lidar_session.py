@@ -53,6 +53,26 @@ def _timing(rows: list[dict]) -> dict:
     }
 
 
+def _camera_pipeline_timing(rows: list[dict]) -> dict:
+    stages = {
+        "http_ms": ("camera_acquisition_started_monotonic_ns", "camera_http_response_received_monotonic_ns"),
+        "decode_ms": ("camera_http_response_received_monotonic_ns", "camera_decode_completed_monotonic_ns"),
+        "publish_ms": ("camera_decode_completed_monotonic_ns", "frame_published_monotonic_ns"),
+        "subscriber_ms": ("frame_published_monotonic_ns", "recorder_observed_monotonic_ns"),
+        "queue_wait_ms": ("recorder_observed_monotonic_ns", "writer_started_monotonic_ns"),
+        "writer_ms": ("writer_started_monotonic_ns", "writer_persisted_monotonic_ns"),
+    }
+    result = {}
+    for name, (start, end) in stages.items():
+        values = [
+            (int(row[end]) - int(row[start])) / 1_000_000
+            for row in rows if row.get(start) not in (None, "") and row.get(end) not in (None, "")
+        ]
+        result[f"{name}_median"] = statistics.median(values) if values else None
+        result[f"{name}_max"] = max(values) if values else None
+    return result
+
+
 def analyze_session(session_dir: Path) -> tuple[dict, dict[str, list[dict]]]:
     manifest = json.loads((session_dir / "manifest.json").read_text(encoding="utf-8"))
     lidar = read_jsonl(session_dir / "lidar" / "raw_scans.jsonl")
@@ -74,7 +94,12 @@ def analyze_session(session_dir: Path) -> tuple[dict, dict[str, list[dict]]]:
         "trip_id": manifest.get("trip_id"), "status": manifest.get("status"),
         "session_duration_sec": session_duration,
         "lidar": {**_timing(lidar), "latency_ms_median": statistics.median(latencies) if latencies else None},
-        "camera": {**_timing(camera), "adjacent_duplicate_frames": duplicate_frames}, "events_count": len(events),
+        "camera": {
+            **_timing(camera),
+            "adjacent_duplicate_frames": duplicate_frames,
+            "pipeline": _camera_pipeline_timing(camera),
+        },
+        "events_count": len(events),
         "matching": {"count": len(matches), "absolute_delta_ms_median": statistics.median(abs(row["delta_ms"]) for row in matches) if matches and camera else None},
     }
     return summary, {"lidar_profiles": lidar, "camera_frames": camera, "events": events, "matches": matches}

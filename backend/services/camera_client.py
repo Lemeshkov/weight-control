@@ -51,6 +51,9 @@ class CameraClient:
         self._http = requests.Session()
         # The camera is on the LAN; environment proxies can intercept local requests.
         self._http.trust_env = False
+        # Reuse one digest-auth state. Creating it after an initial Basic/401
+        # request for every frame adds avoidable HTTP round trips.
+        self._snapshot_auth = HTTPDigestAuth(username, password) if username else None
         self._frame_sequence = 0
         self._last_frame_monotonic_ns = 0
         self._frame_listeners = []
@@ -66,7 +69,7 @@ class CameraClient:
             if listener in self._frame_listeners:
                 self._frame_listeners.remove(listener)
 
-    def _publish_frame(self, frame: np.ndarray) -> bool:
+    def _publish_frame(self, frame: np.ndarray, acquisition_timing: Optional[Dict[str, int]] = None) -> bool:
         """Encode once in the capture thread and publish the latest JPEG."""
         try:
             if frame is None or frame.size == 0:
@@ -91,11 +94,14 @@ class CameraClient:
                 self._frame_height = int(frame.shape[0])
                 self.frame_timestamp = captured_at
                 listeners = list(self._frame_listeners)
+            published_monotonic_ns = time.monotonic_ns()
             sample = {
                 "sequence_number": sequence,
                 "captured_utc": captured_at.isoformat(),
                 "captured_monotonic_ns": captured_monotonic_ns,
-                "processing_completed_monotonic_ns": time.monotonic_ns(),
+                **(acquisition_timing or {}),
+                "frame_published_monotonic_ns": published_monotonic_ns,
+                "processing_completed_monotonic_ns": published_monotonic_ns,
                 "jpeg": jpeg,
                 "width": int(frame.shape[1]),
                 "height": int(frame.shape[0]),
@@ -128,32 +134,32 @@ class CameraClient:
 
     def _get_snapshot_url(self) -> str:
         """Получить снимок через HTTP (альтернативный метод)"""
-        if self.username and self.password:
-            return f"http://{self.username}:{self.password}@{self.ip}:{self.port}/ISAPI/Streaming/channels/101/picture"
         return f"http://{self.ip}:{self.port}/ISAPI/Streaming/channels/101/picture"
 
     def get_snapshot(self) -> Optional[bytes]:
         """Получить JPEG снимок через HTTP (более стабильно)"""
-        if not CV2_AVAILABLE:
-            return None
+        content, _ = self.get_snapshot_with_timing()
+        return content
 
+    def get_snapshot_with_timing(self) -> tuple[Optional[bytes], Dict[str, int]]:
+        """Fetch one snapshot and expose acquisition timing to subscribers."""
+        timing = {"camera_acquisition_started_monotonic_ns": time.monotonic_ns()}
+        if not CV2_AVAILABLE:
+            return None, timing
         try:
-            url = self._get_snapshot_url()
-            response = self._http.get(url, timeout=(2, 3), auth=(self.username, self.password))
-            if response.status_code == 401 and self.username:
-                response = self._http.get(
-                    url,
-                    timeout=(2, 3),
-                    auth=HTTPDigestAuth(self.username, self.password),
-                )
+            response = self._http.get(
+                self._get_snapshot_url(),
+                timeout=(2, 3),
+                auth=self._snapshot_auth,
+            )
+            timing["camera_http_response_received_monotonic_ns"] = time.monotonic_ns()
             if response.status_code == 200:
-                return response.content
-            else:
-                logger.warning(f"HTTP snapshot failed: {response.status_code}")
-                return None
-        except Exception as e:
-            logger.debug(f"Snapshot error: {e}")
-            return None
+                return response.content, timing
+            logger.warning("HTTP snapshot failed: %s", response.status_code)
+        except Exception as exc:
+            timing["camera_http_response_received_monotonic_ns"] = time.monotonic_ns()
+            logger.debug("Snapshot error: %s", exc)
+        return None, timing
 
     def connect(self) -> bool:
         """Подключение к камере"""
@@ -261,15 +267,15 @@ class CameraClient:
             try:
                 if use_snapshot or (self._error_count > 10):
                     use_snapshot = True
-                    img_bytes = self.get_snapshot()
+                    img_bytes, acquisition_timing = self.get_snapshot_with_timing()
                     if img_bytes:
                         nparr = np.frombuffer(img_bytes, np.uint8)
                         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         if frame is not None:
-                            self._publish_frame(frame)
+                            acquisition_timing["camera_decode_completed_monotonic_ns"] = time.monotonic_ns()
+                            self._publish_frame(frame, acquisition_timing)
                             self._error_count = 0
                             self.is_connected = True
-                            time.sleep(0.2)
                             continue
 
                     self._error_count += 1

@@ -32,6 +32,7 @@ class CameraLidarDiagnosticRecorder:
         self._manifest: dict[str, Any] = {}
         self._lock = threading.Lock()
         self._bytes_written = 0
+        self._camera_sequences_seen: set[int] = set()
 
     @property
     def active(self) -> bool:
@@ -55,12 +56,14 @@ class CameraLidarDiagnosticRecorder:
         session_dir = self.base_dir / session_key
         self._session_dir = session_dir
         self._bytes_written = 0
+        self._camera_sequences_seen = set()
         self._manifest = {
             "format_version": 2, "status": "RECORDING", "session_key": session_key,
             "trip_id": trip_id, "started_at": started_at, "started_monotonic_ns": time.monotonic_ns(),
             "software_git_commit": None, "camera_configuration": camera_config or {},
             "lidar_configuration": {"source": "per-profile LMDscandata.DIST1"},
             "record_counts": {"lidar": 0, "camera": 0, "events": 0, "markers": 0},
+            "camera_duplicate_sequence_count": 0,
             "dropped_record_count": 0, "errors": [],
             "limits": {"max_duration_sec": self.max_duration_sec, "max_bytes": self.max_bytes, "queue_size": self.queue_size},
         }
@@ -84,7 +87,17 @@ class CameraLidarDiagnosticRecorder:
             logger.warning("Diagnostic writer queue full; %s record dropped", kind)
 
     def record_camera(self, sample: dict) -> None:
-        self._enqueue("camera", dict(sample))
+        if not self.active:
+            return
+        sequence = int(sample["sequence_number"])
+        with self._lock:
+            if sequence in self._camera_sequences_seen:
+                self._manifest["camera_duplicate_sequence_count"] += 1
+                return
+            self._camera_sequences_seen.add(sequence)
+        payload = dict(sample)
+        payload["recorder_observed_monotonic_ns"] = time.monotonic_ns()
+        self._enqueue("camera", payload)
 
     def record_lidar(self, sample: dict) -> None:
         if self.active and self._manifest["lidar_configuration"].get("beam_count") is None:
@@ -143,9 +156,11 @@ class CameraLidarDiagnosticRecorder:
             try:
                 if kind == "camera":
                     jpeg = payload.pop("jpeg")
+                    payload["writer_started_monotonic_ns"] = time.monotonic_ns()
                     payload["jpeg_sha256"] = hashlib.sha256(jpeg).hexdigest()
                     name = f"frame_{payload['sequence_number']:08d}.jpg"
                     (self._session_dir / "camera" / name).write_bytes(jpeg)
+                    payload["writer_persisted_monotonic_ns"] = time.monotonic_ns()
                     new_file = not camera_csv.exists()
                     with camera_csv.open("a", encoding="utf-8", newline="") as handle:
                         writer = csv.DictWriter(handle, fieldnames=[*payload.keys(), "file"])
