@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from config import settings
 
@@ -20,12 +20,14 @@ logger = logging.getLogger(__name__)
 class CameraLidarDiagnosticRecorder:
     """Non-blocking, opt-in writer for one physical pass."""
 
-    def __init__(self, *, enabled=None, base_dir=None, queue_size=None, max_duration_sec=None, max_bytes=None):
+    def __init__(self, *, enabled=None, base_dir=None, queue_size=None, max_duration_sec=None, max_bytes=None,
+                 camera_max_fps=None):
         self.enabled = settings.CAMERA_LIDAR_DIAGNOSTIC_RECORDING if enabled is None else enabled
         self.base_dir = Path(base_dir or settings.DIAGNOSTIC_DATA_DIR)
         self.queue_size = queue_size or settings.DIAGNOSTIC_QUEUE_SIZE
         self.max_duration_sec = max_duration_sec or settings.DIAGNOSTIC_MAX_DURATION_SEC
         self.max_bytes = max_bytes or settings.DIAGNOSTIC_MAX_BYTES
+        self.camera_max_fps = settings.DIAGNOSTIC_CAMERA_MAX_FPS if camera_max_fps is None else camera_max_fps
         self._queue: queue.Queue = queue.Queue(maxsize=self.queue_size)
         self._thread: threading.Thread | None = None
         self._session_dir: Path | None = None
@@ -33,6 +35,7 @@ class CameraLidarDiagnosticRecorder:
         self._lock = threading.Lock()
         self._bytes_written = 0
         self._camera_sequences_seen: set[int] = set()
+        self._last_camera_recorded_monotonic_ns: Optional[int] = None
 
     @property
     def active(self) -> bool:
@@ -57,6 +60,7 @@ class CameraLidarDiagnosticRecorder:
         self._session_dir = session_dir
         self._bytes_written = 0
         self._camera_sequences_seen = set()
+        self._last_camera_recorded_monotonic_ns = None
         self._manifest = {
             "format_version": 2, "status": "RECORDING", "session_key": session_key,
             "trip_id": trip_id, "started_at": started_at, "started_monotonic_ns": time.monotonic_ns(),
@@ -64,8 +68,14 @@ class CameraLidarDiagnosticRecorder:
             "lidar_configuration": {"source": "per-profile LMDscandata.DIST1"},
             "record_counts": {"lidar": 0, "camera": 0, "events": 0, "markers": 0},
             "camera_duplicate_sequence_count": 0,
+            "camera_sampled_out_count": 0,
             "dropped_record_count": 0, "errors": [],
-            "limits": {"max_duration_sec": self.max_duration_sec, "max_bytes": self.max_bytes, "queue_size": self.queue_size},
+            "limits": {
+                "max_duration_sec": self.max_duration_sec,
+                "max_bytes": self.max_bytes,
+                "queue_size": self.queue_size,
+                "camera_max_fps": self.camera_max_fps,
+            },
         }
         self._thread = threading.Thread(target=self._writer_loop, name="diagnostic-writer", daemon=True)
         self._thread.start()
@@ -95,6 +105,16 @@ class CameraLidarDiagnosticRecorder:
                 self._manifest["camera_duplicate_sequence_count"] += 1
                 return
             self._camera_sequences_seen.add(sequence)
+            captured_ns = int(sample["captured_monotonic_ns"])
+            minimum_interval_ns = int(1_000_000_000 / self.camera_max_fps) if self.camera_max_fps > 0 else 0
+            if (
+                minimum_interval_ns
+                and self._last_camera_recorded_monotonic_ns is not None
+                and captured_ns - self._last_camera_recorded_monotonic_ns < minimum_interval_ns
+            ):
+                self._manifest["camera_sampled_out_count"] += 1
+                return
+            self._last_camera_recorded_monotonic_ns = captured_ns
         payload = dict(sample)
         payload["recorder_observed_monotonic_ns"] = time.monotonic_ns()
         self._enqueue("camera", payload)

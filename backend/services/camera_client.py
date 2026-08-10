@@ -5,6 +5,8 @@ import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from threading import Thread, Event, Lock
+from collections import deque
+from urllib.parse import quote
 import requests
 from requests.auth import HTTPDigestAuth
 import numpy as np
@@ -30,13 +32,22 @@ class CameraClient:
                     port: int = 80,
                     username: str = "",
                     password: str = "",
-                    rtsp_path: str = "/Streaming/Channels/101"):
+                    rtsp_path: str = "/Streaming/Channels/101",
+                    capture_mode: str = "snapshot",
+                    rtsp_fallback_to_snapshot: bool = True,
+                    rtsp_reconnect_seconds: float = 1.0):
         self.camera_type = camera_type
         self.ip = ip
         self.port = port
         self.username = username
         self.password = password
         self.rtsp_path = rtsp_path
+        self.capture_mode = capture_mode.strip().lower()
+        if self.capture_mode not in {"snapshot", "rtsp"}:
+            raise ValueError("capture_mode must be 'snapshot' or 'rtsp'")
+        self.active_capture_mode = self.capture_mode
+        self.rtsp_fallback_to_snapshot = rtsp_fallback_to_snapshot
+        self.rtsp_reconnect_seconds = rtsp_reconnect_seconds
         self.cap: Optional[cv2.VideoCapture] = None if not CV2_AVAILABLE else None
         self.is_connected = False
         self._frame_lock = Lock()
@@ -57,6 +68,10 @@ class CameraClient:
         self._frame_sequence = 0
         self._last_frame_monotonic_ns = 0
         self._frame_listeners = []
+        self._published_monotonic_ns = deque(maxlen=100)
+        self.last_read_latency_ms: Optional[float] = None
+        self.rtsp_reconnect_count = 0
+        self.rtsp_failed_reads = 0
 
     def add_frame_listener(self, listener) -> None:
         """Subscribe to already captured frames; this never starts another capture loop."""
@@ -86,6 +101,7 @@ class CameraClient:
             captured_at = datetime.now(timezone.utc)
             captured_monotonic_ns = max(time.monotonic_ns(), self._last_frame_monotonic_ns + 1)
             self._last_frame_monotonic_ns = captured_monotonic_ns
+            self._published_monotonic_ns.append(captured_monotonic_ns)
             with self._frame_lock:
                 self._frame_sequence += 1
                 sequence = self._frame_sequence
@@ -127,10 +143,46 @@ class CameraClient:
             return "0"
         elif self.camera_type == "ip":
             if self.username and self.password:
-                return f"rtsp://{self.username}:{self.password}@{self.ip}:554{self.rtsp_path}"
+                username = quote(self.username, safe="")
+                password = quote(self.password, safe="")
+                return f"rtsp://{username}:{password}@{self.ip}:554{self.rtsp_path}"
             else:
                 return f"rtsp://{self.ip}:554{self.rtsp_path}"
         return "0"
+
+    @property
+    def acquisition_fps(self) -> Optional[float]:
+        values = list(self._published_monotonic_ns)
+        if len(values) < 2 or values[-1] <= values[0]:
+            return None
+        return round((len(values) - 1) * 1_000_000_000 / (values[-1] - values[0]), 3)
+
+    def _open_rtsp(self) -> bool:
+        """Open the configured RTSP stream without logging its credentialed URL."""
+        if not CV2_AVAILABLE:
+            return False
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+        try:
+            params = []
+            if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                params.extend([cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000])
+            if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+                params.extend([cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000])
+            rtsp_url = self._get_stream_url()
+            self.cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG, params)
+            if self.cap and self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.active_capture_mode = "rtsp"
+                logger.info("Camera RTSP stream opened: host=%s path=%s", self.ip, self.rtsp_path)
+                return True
+        except Exception as exc:
+            logger.warning("Camera RTSP open failed: host=%s error=%s", self.ip, type(exc).__name__)
+        if self.cap:
+            self.cap.release()
+        self.cap = None
+        return False
 
     def _get_snapshot_url(self) -> str:
         """Получить снимок через HTTP (альтернативный метод)"""
@@ -176,6 +228,24 @@ class CameraClient:
 
         try:
             if self.camera_type == "ip":
+                if self.capture_mode == "rtsp":
+                    if self._open_rtsp():
+                        self.is_connected = True
+                        self._snapshot_mode = False
+                        self._stop_event.clear()
+                        self._capture_thread = Thread(target=self._capture_loop, daemon=True)
+                        self._capture_thread.start()
+                        return True
+                    if not self.rtsp_fallback_to_snapshot:
+                        logger.warning("RTSP unavailable; background reconnect enabled, snapshot fallback disabled")
+                        self.is_connected = False
+                        self._snapshot_mode = False
+                        self._stop_event.clear()
+                        self._capture_thread = Thread(target=self._capture_loop, daemon=True)
+                        self._capture_thread.start()
+                        return True
+                    logger.warning("RTSP unavailable; explicitly falling back to HTTP snapshot mode")
+                    self.active_capture_mode = "snapshot"
                 # Hikvision HTTP snapshots are bounded by a request timeout and
                 # cannot freeze the capture thread like a blocking RTSP read.
                 snapshot = self.get_snapshot()
@@ -185,6 +255,7 @@ class CameraClient:
                         self._publish_frame(frame)
                         self.is_connected = True
                         self._snapshot_mode = True
+                        self.active_capture_mode = "snapshot"
                         self._stop_event.clear()
                         self._capture_thread = Thread(target=self._capture_loop, daemon=True)
                         self._capture_thread.start()
@@ -194,44 +265,13 @@ class CameraClient:
                 # Start a bounded retry loop even when the camera is offline at
                 # application startup. Do not fall back to blocking RTSP reads.
                 self._snapshot_mode = True
+                self.active_capture_mode = "snapshot"
                 self.is_connected = False
                 self._stop_event.clear()
                 self._capture_thread = Thread(target=self._capture_loop, daemon=True)
                 self._capture_thread.start()
                 logger.warning("Камера пока недоступна; запущено фоновое переподключение")
                 return True
-
-                urls = [
-                    f"rtsp://{self.username}:{self.password}@{self.ip}:554{self.rtsp_path}",
-                    f"rtsp://{self.username}:{self.password}@{self.ip}:554/h264",
-                    f"rtsp://{self.username}:{self.password}@{self.ip}:554/streaming/channels/1",
-                    f"rtsp://{self.username}:{self.password}@{self.ip}:554/Streaming/Channels/101",
-                ]
-
-                for url in urls:
-                    logger.info(f"Пробуем подключиться к: {url[:60]}...")
-                    self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-                    if self.cap:
-                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        self.cap.set(cv2.CAP_PROP_FPS, 5)
-
-                    if self.cap and self.cap.isOpened():
-                        for _ in range(5):
-                            ret, frame = self.cap.read()
-                            if ret and frame is not None:
-                                self._publish_frame(frame)
-                                logger.info(f"✅ Подключено через: {url[:60]}")
-                                break
-                        else:
-                            if self.cap:
-                                self.cap.release()
-                            self.cap = None
-                            continue
-                        break
-                    else:
-                        if self.cap:
-                            self.cap.release()
-                        self.cap = None
 
             if not self.cap and self.camera_type in ["usb", "webcam"]:
                 self.cap = cv2.VideoCapture(0)
@@ -265,7 +305,7 @@ class CameraClient:
 
         while not self._stop_event.is_set():
             try:
-                if use_snapshot or (self._error_count > 10):
+                if use_snapshot:
                     use_snapshot = True
                     img_bytes, acquisition_timing = self.get_snapshot_with_timing()
                     if img_bytes:
@@ -287,34 +327,53 @@ class CameraClient:
                 if self.cap and self.cap.isOpened():
                     # ⭐ ОБЕРНИТЕ В try/except
                     try:
+                        read_started = time.monotonic_ns()
                         ret, frame = self.cap.read()
+                        read_completed = time.monotonic_ns()
+                        self.last_read_latency_ms = round((read_completed - read_started) / 1_000_000, 3)
                         if ret and frame is not None:
-                            self._publish_frame(frame)
+                            self._publish_frame(frame, {
+                                "camera_frame_read_started_monotonic_ns": read_started,
+                                "camera_frame_read_completed_monotonic_ns": read_completed,
+                            })
                             self._error_count = 0
-                            time.sleep(0.05)
+                            self.is_connected = True
                         else:
                             self._error_count += 1
+                            self.rtsp_failed_reads += 1
                             if self._error_count % 10 == 0:
                                 logger.warning(f"Не удалось захватить кадр ({self._error_count} ошибок)")
-                            time.sleep(0.1)
-                    except Exception as e:
-                        # ⭐ ЛОВИМ ЛЮБУЮ ОШИБКУ RTSP
-                        logger.debug(f"RTSP ошибка при чтении кадра: {e}")
+                            if self._error_count >= 3:
+                                self.is_connected = False
+                                self.cap.release()
+                                self.cap = None
+                    except Exception as exc:
+                        logger.debug("RTSP frame read error: %s", type(exc).__name__)
                         self._error_count += 1
-                        if self._error_count > 20:
-                            logger.warning("⚠️ Слишком много ошибок RTSP, переключаемся на HTTP снимки")
-                            use_snapshot = True
-                        time.sleep(0.5)
+                        self.rtsp_failed_reads += 1
+                        if self._error_count >= 3:
+                            self.is_connected = False
+                            if self.cap:
+                                self.cap.release()
+                            self.cap = None
                 else:
-                    time.sleep(0.5)
+                    if self.capture_mode == "rtsp" and not use_snapshot:
+                        self.rtsp_reconnect_count += 1
+                        if not self._open_rtsp():
+                            if self.rtsp_fallback_to_snapshot:
+                                logger.warning("RTSP reconnect failed; explicitly falling back to HTTP snapshot mode")
+                                use_snapshot = True
+                                self.active_capture_mode = "snapshot"
+                            else:
+                                time.sleep(self.rtsp_reconnect_seconds)
+                        else:
+                            self.is_connected = True
+                    else:
+                        time.sleep(0.5)
 
-            except Exception as e:
-                # ⭐ ГЛАВНЫЙ ПЕРЕХВАТ ОШИБОК
-                logger.warning(f"⚠️ Ошибка в цикле захвата: {e}")
+            except Exception as exc:
+                logger.warning("Camera capture loop error: %s", type(exc).__name__)
                 self._error_count += 1
-                if self._error_count > 30:
-                    logger.error("❌ Критическая ошибка камеры, переключение на HTTP режим")
-                    use_snapshot = True
                 time.sleep(1)
 
     def get_frame(self) -> Optional[Dict[str, Any]]:

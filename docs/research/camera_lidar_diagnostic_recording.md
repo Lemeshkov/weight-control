@@ -24,6 +24,23 @@ Camera recorder — listener единственного существующег
 
 HTTP snapshot hot path не содержит искусственной паузы после успешного кадра. Для Hikvision используется один persistent `HTTPDigestAuth`: отдельный Basic-запрос с ожидаемым 401 перед каждым Digest-запросом не выполняется. В `frames.csv` сохраняются границы стадий acquisition start, HTTP response, decode, publish, recorder observation, writer start и persistence. Analyzer выводит median/max для HTTP, decode, publish, subscriber callback, queue wait и writer; это позволяет отличить ограничение камеры от software/disk bottleneck.
 
+## RTSP acquisition
+
+По умолчанию сохраняется безопасный прежний backend `snapshot`. Для исследовательского запуска:
+
+```env
+CAMERA_CAPTURE_MODE=rtsp
+CAMERA_RTSP_FALLBACK_TO_SNAPSHOT=true
+CAMERA_RTSP_RECONNECT_SECONDS=1
+DIAGNOSTIC_CAMERA_MAX_FPS=5
+```
+
+RTSP открывается существующим singleton `CameraClient` через OpenCV/FFmpeg. URL собирается из percent-encoded credentials, IP и `CAMERA_RTSP_PATH`; URL и пароль не логируются. Работает один прежний capture thread, а каждый `VideoCapture.read()` публикуется через тот же `_publish_frame`, latest cache и subscribers. `CAP_PROP_BUFFERSIZE=1` устанавливается best-effort; thread непрерывно читает stream без искусственного sleep, поэтому не воспроизводит очередь с дисковой скоростью. Эффективность FFmpeg buffer property зависит от конкретной OpenCV build и проверяется по read/publish timestamps реального теста.
+
+После трёх неуспешных reads stream закрывается и выполняется reconnect. Счётчики `rtsp_failed_reads`, `rtsp_reconnect_count`, текущий backend, acquisition FPS и последняя read latency доступны в `/api/camera/status`. При включённом fallback неудачный open/reconnect явно логируется перед переходом на HTTP; silent fallback отсутствует.
+
+Internal acquisition не ограничивается. Только diagnostic subscriber сохраняет не более `DIAGNOSTIC_CAMERA_MAX_FPS` новых sequence (значение `0` отключает sampling). Пропущенные sampling policy кадры отражаются в `camera_sampled_out_count` и не считаются queue drops. RTSP `frames.csv` содержит read start/completion, publish, subscriber и writer timestamps; analyzer выводит `rtsp_read_ms` и `rtsp_publish_ms`.
+
 LiDAR polling и пауза 300 мс не изменены. Каждый `DIST1` сохраняется lossless: полный `ranges_raw`, позиционный `ranges_mm` с `null` для invalid beam, `valid_mask`, start/end angle, angular step, beam count и raw scale/offset. Derived 70°/100…3000 мм representation лежит отдельно в `filtered`.
 
 Частоты из переменной части `LMDscandata` пока намеренно не декодируются по абсолютным позициям: первый реальный тест доказал, что такой offset ненадёжен (`native_scan_frequency_hz=0`, `measurement_frequency_hz=50`). По протоколу SICK scan frequency — частота scans/rotations, а measurement frequency — частота отдельных measurement shots; это разные величины. Диагностический формат сохраняет `telegram_header_tokens` lossless, выставляет обе частоты в `null` и пишет `frequency_parse_status`. Достоверную scan frequency следует позже читать protocol-aware parser либо отдельной командой scan configuration; значение 50 не подставляется как native scan frequency.

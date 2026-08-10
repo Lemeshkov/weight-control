@@ -26,6 +26,9 @@ camera_client = CameraClient(
     username=settings.CAMERA_USERNAME,
     password=settings.CAMERA_PASSWORD,
     rtsp_path=settings.CAMERA_RTSP_PATH,
+    capture_mode=settings.CAMERA_CAPTURE_MODE,
+    rtsp_fallback_to_snapshot=settings.CAMERA_RTSP_FALLBACK_TO_SNAPSHOT,
+    rtsp_reconnect_seconds=settings.CAMERA_RTSP_RECONNECT_SECONDS,
 )
 
 @router.on_event("startup")
@@ -110,6 +113,11 @@ async def get_camera_status():
         "ip": camera_client.ip,
         "frame_timestamp": camera_client.frame_timestamp.isoformat() if camera_client.frame_timestamp else None,
         "errors": camera_client._error_count,
+        "capture_mode": camera_client.active_capture_mode,
+        "acquisition_fps": camera_client.acquisition_fps,
+        "last_read_latency_ms": camera_client.last_read_latency_ms,
+        "rtsp_reconnect_count": camera_client.rtsp_reconnect_count,
+        "rtsp_failed_reads": camera_client.rtsp_failed_reads,
         "active_stream_clients": active_stream_clients,
     }
 

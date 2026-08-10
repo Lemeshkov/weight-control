@@ -56,8 +56,10 @@ def _timing(rows: list[dict]) -> dict:
 def _camera_pipeline_timing(rows: list[dict]) -> dict:
     stages = {
         "http_ms": ("camera_acquisition_started_monotonic_ns", "camera_http_response_received_monotonic_ns"),
+        "rtsp_read_ms": ("camera_frame_read_started_monotonic_ns", "camera_frame_read_completed_monotonic_ns"),
         "decode_ms": ("camera_http_response_received_monotonic_ns", "camera_decode_completed_monotonic_ns"),
         "publish_ms": ("camera_decode_completed_monotonic_ns", "frame_published_monotonic_ns"),
+        "rtsp_publish_ms": ("camera_frame_read_completed_monotonic_ns", "frame_published_monotonic_ns"),
         "subscriber_ms": ("frame_published_monotonic_ns", "recorder_observed_monotonic_ns"),
         "queue_wait_ms": ("recorder_observed_monotonic_ns", "writer_started_monotonic_ns"),
         "writer_ms": ("writer_started_monotonic_ns", "writer_persisted_monotonic_ns"),

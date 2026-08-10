@@ -52,7 +52,7 @@ def test_enabled_recorder_flushes_bind_and_partial_metadata(tmp_path):
 def test_camera_listener_uses_same_client_and_monotonic_sequence(tmp_path):
     if not CV2_AVAILABLE:
         return
-    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path)
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path, camera_max_fps=0)
     camera = CameraClient()
     recorder.attach_camera(camera)
     recorder.start("camera", started_at="2026-08-09T00:00:00+00:00")
@@ -84,8 +84,22 @@ def test_duplicate_camera_sequence_is_not_written_twice(tmp_path):
     assert len(list((tmp_path / "duplicate" / "camera").glob("*.jpg"))) == 1
 
 
+def test_diagnostic_camera_sampling_does_not_limit_producer(tmp_path):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path, camera_max_fps=5)
+    recorder.start("sampled", started_at="2026-08-10T00:00:00+00:00")
+    for sequence, captured_ns in enumerate((1_000_000_000, 1_100_000_000, 1_200_000_000), start=1):
+        recorder.record_camera({
+            "sequence_number": sequence, "captured_utc": "2026-08-10T00:00:00+00:00",
+            "captured_monotonic_ns": captured_ns, "jpeg": b"jpeg", "width": 10, "height": 10,
+        })
+    recorder.stop()
+    manifest = json.loads((tmp_path / "sampled" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["record_counts"]["camera"] == 2
+    assert manifest["camera_sampled_out_count"] == 1
+
+
 def test_camera_enqueue_does_not_wait_for_writer_disk_io(tmp_path):
-    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path, queue_size=500)
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path, queue_size=500, camera_max_fps=0)
     recorder.start("camera_queue", started_at="2026-08-10T00:00:00+00:00")
     started = time.perf_counter()
     for sequence in range(100):
