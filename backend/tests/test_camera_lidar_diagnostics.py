@@ -4,11 +4,14 @@ import time
 from pathlib import Path
 
 import numpy as np
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from scripts.analyze_camera_lidar_session import analyze_session, nearest_matches
 from services.camera_client import CV2_AVAILABLE, CameraClient
 from services.camera_lidar_diagnostic_recorder import CameraLidarDiagnosticRecorder
 from services.lidar_client import LidarClient
+from routers import camera as camera_router
 
 
 def telegram(ranges):
@@ -23,6 +26,8 @@ def test_raw_format_preserves_beam_indexes_and_invalid_values():
     assert parsed["ranges_raw"] == [1000, 0, 2000, 9999]
     assert parsed["ranges_mm"] == [1000, None, 2000, None]
     assert parsed["valid_mask"] == [True, False, True, False]
+    assert parsed["native_scan_frequency_hz"] is None
+    assert parsed["measurement_frequency_hz"] is None
 
 
 def test_disabled_recorder_creates_nothing(tmp_path):
@@ -89,3 +94,62 @@ def test_nearest_matching_and_analyzer(tmp_path):
     assert tables["matches"][0]["camera_sequence"] == "2"
     assert tables["matches"][0]["delta_ms"] == -100.0
     assert summary["lidar"]["latency_ms_median"] == 300.0
+
+
+def test_all_actual_event_producers_share_one_contract(tmp_path):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path)
+    recorder.start("events", started_at="2026-08-10T07:02:43+00:00")
+    recorder.record_event("SESSION_OPENED", scale_state="LoadScale", weight_kg=100, stable=False)
+    recorder.record_event("SCALE_SNAPSHOT", scale_state="Weighing", weight_kg=1000, stable=True, state_changed=True)
+    recorder.record_event("COORDINATOR_TRANSITION", workflow_state="WEIGHING", scale_state="Weighing")
+    recorder.record_event("STABLE_WEIGHT", workflow_state="WEIGHT_CAPTURED", weight_kg=1000, stable_samples=3)
+    recorder.bind_trip(13)
+    recorder.record_event("SESSION_FINALIZED", coordinator_status="COMPLETED", workflow_state="COMPLETED")
+    recorder.stop()
+
+    session = tmp_path / "events"
+    records = [json.loads(line) for line in (session / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [record["event"] for record in records] == [
+        "SESSION_OPENED", "SCALE_SNAPSHOT", "COORDINATOR_TRANSITION",
+        "STABLE_WEIGHT", "TRIP_BOUND", "SESSION_FINALIZED",
+    ]
+    assert all(set(record) == {"type", "event", "captured_utc", "captured_monotonic_ns", "payload"} for record in records)
+    manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["record_counts"]["events"] == 6
+    assert manifest["status"] == "COMPLETED"
+    assert manifest["errors"] == []
+
+
+def test_active_marker_endpoint_writes_marker_contract(tmp_path, monkeypatch):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path)
+    recorder.start("marker", started_at="2026-08-10T07:02:43+00:00")
+    monkeypatch.setattr(camera_router, "diagnostic_recorder", recorder)
+    app = FastAPI()
+    app.include_router(camera_router.router)
+
+    response = TestClient(app).post("/api/camera/debug/diagnostics/marker", json={"label": "STOPPED"})
+    assert response.status_code == 200
+    recorder.stop()
+
+    session = tmp_path / "marker"
+    records = [json.loads(line) for line in (session / "markers.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert records == [{
+        "type": "marker", "event": "OPERATOR_MARKER",
+        "captured_utc": records[0]["captured_utc"],
+        "captured_monotonic_ns": records[0]["captured_monotonic_ns"],
+        "payload": {"label": "STOPPED"},
+    }]
+    manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["record_counts"]["markers"] == 1
+    assert manifest["status"] == "COMPLETED"
+
+
+def test_marker_endpoint_rejects_after_session_finished(tmp_path, monkeypatch):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path)
+    recorder.start("ended", started_at="2026-08-10T07:02:43+00:00")
+    recorder.stop()
+    monkeypatch.setattr(camera_router, "diagnostic_recorder", recorder)
+    app = FastAPI(); app.include_router(camera_router.router)
+
+    response = TestClient(app).post("/api/camera/debug/diagnostics/marker", json={"label": "STOPPED"})
+    assert response.status_code == 409

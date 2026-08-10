@@ -250,16 +250,6 @@ class LidarClient:
         raw_ranges = [self._hex_to_signed_int(token) for token in tokens]
         valid_mask = [self.MIN_VALID_DISTANCE <= value <= self.MAX_VALID_DISTANCE for value in raw_ranges]
         ranges_mm = [value if valid else None for value, valid in zip(raw_ranges, valid_mask)]
-        scan_frequency_hz = None
-        measurement_frequency_hz = None
-        # CoLa LMDscandata header fields are in 1/100 Hz. Minimal telegrams may
-        # begin at DIST1; unknown values deliberately remain null.
-        if index >= 17:
-            try:
-                scan_frequency_hz = int(parts[15], 16) / 100
-                measurement_frequency_hz = int(parts[16], 16) / 100
-            except ValueError:
-                pass
         return {
             "start_angle_deg": start_angle_deg,
             "end_angle_deg": start_angle_deg + max(beam_count - 1, 0) * angular_step_deg,
@@ -267,8 +257,13 @@ class LidarClient:
             "beam_count": beam_count,
             "scale_factor_raw": scale_factor,
             "scale_offset_raw": scale_offset,
-            "native_scan_frequency_hz": scan_frequency_hz,
-            "measurement_frequency_hz": measurement_frequency_hz,
+            # Preserve the complete header for later protocol-aware decoding.
+            # Absolute token offsets are not safe because optional telegram
+            # sections change the position of fields before DIST1.
+            "telegram_header_tokens": parts[2:index],
+            "native_scan_frequency_hz": None,
+            "measurement_frequency_hz": None,
+            "frequency_parse_status": "NOT_PARSED_FROM_VARIABLE_LMDSCANDATA_HEADER",
             "ranges_raw": raw_ranges,
             "ranges_mm": ranges_mm,
             "valid_mask": valid_mask,

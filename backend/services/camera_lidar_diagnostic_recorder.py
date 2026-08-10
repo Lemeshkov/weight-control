@@ -97,8 +97,13 @@ class CameraLidarDiagnosticRecorder:
         self._enqueue("lidar", dict(sample))
 
     def record_event(self, event_type: str, **values) -> None:
-        self._enqueue("event", {"event_type": event_type, "captured_utc": datetime.now(timezone.utc).isoformat(),
-                                "captured_monotonic_ns": time.monotonic_ns(), **values})
+        self._enqueue("events", {
+            "type": "event",
+            "event": event_type,
+            "captured_utc": datetime.now(timezone.utc).isoformat(),
+            "captured_monotonic_ns": time.monotonic_ns(),
+            "payload": values,
+        })
 
     def bind_trip(self, trip_id: int) -> None:
         if self.active:
@@ -108,8 +113,13 @@ class CameraLidarDiagnosticRecorder:
     def marker(self, label: str) -> bool:
         if label not in {"MOVING", "STOPPED", "RESUMED"} or not self.active:
             return False
-        self._enqueue("marker", {"label": label, "captured_utc": datetime.now(timezone.utc).isoformat(),
-                                 "captured_monotonic_ns": time.monotonic_ns()})
+        self._enqueue("markers", {
+            "type": "marker",
+            "event": "OPERATOR_MARKER",
+            "captured_utc": datetime.now(timezone.utc).isoformat(),
+            "captured_monotonic_ns": time.monotonic_ns(),
+            "payload": {"label": label},
+        })
         return True
 
     def _append_jsonl(self, relative: str, payload: dict) -> None:
@@ -143,10 +153,10 @@ class CameraLidarDiagnosticRecorder:
                         writer.writerow({**payload, "file": name})
                     self._bytes_written += len(jpeg)
                 elif kind == "lidar": self._append_jsonl("lidar/raw_scans.jsonl", payload)
-                elif kind == "event": self._append_jsonl("events.jsonl", payload)
-                else: self._append_jsonl("markers.jsonl", payload)
-                key = "markers" if kind == "marker" else kind
-                self._manifest["record_counts"][key] += 1
+                elif kind == "events": self._append_jsonl("events.jsonl", payload)
+                elif kind == "markers": self._append_jsonl("markers.jsonl", payload)
+                else: raise ValueError(f"Unsupported diagnostic record kind: {kind}")
+                self._manifest["record_counts"][kind] += 1
             except Exception as exc:
                 self._manifest["status"] = "PARTIAL"
                 self._manifest["errors"].append(f"{type(exc).__name__}: {exc}")

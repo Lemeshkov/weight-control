@@ -24,6 +24,8 @@ Camera recorder — listener единственного существующег
 
 LiDAR polling и пауза 300 мс не изменены. Каждый `DIST1` сохраняется lossless: полный `ranges_raw`, позиционный `ranges_mm` с `null` для invalid beam, `valid_mask`, start/end angle, angular step, beam count и raw scale/offset. Derived 70°/100…3000 мм representation лежит отдельно в `filtered`.
 
+Частоты из переменной части `LMDscandata` пока намеренно не декодируются по абсолютным позициям: первый реальный тест доказал, что такой offset ненадёжен (`native_scan_frequency_hz=0`, `measurement_frequency_hz=50`). По протоколу SICK scan frequency — частота scans/rotations, а measurement frequency — частота отдельных measurement shots; это разные величины. Диагностический формат сохраняет `telegram_header_tokens` lossless, выставляет обе частоты в `null` и пишет `frequency_parse_status`. Достоверную scan frequency следует позже читать protocol-aware parser либо отдельной командой scan configuration; значение 50 не подставляется как native scan frequency.
+
 ## Структура
 
 ```text
@@ -41,6 +43,20 @@ data/diagnostics/<session_key>/
     events.csv
     matches.csv
 ```
+
+Единый event contract:
+
+```json
+{
+  "type": "event",
+  "event": "SCALE_SNAPSHOT",
+  "captured_utc": "...",
+  "captured_monotonic_ns": 123,
+  "payload": {"scale_state": "Weighing", "weight_kg": 1000, "stable": true}
+}
+```
+
+Markers используют ту же envelope-структуру с `type=marker`, `event=OPERATOR_MARKER` и label внутри `payload`.
 
 Все samples содержат UTC и monotonic time одного backend process. LiDAR дополнительно содержит request start, response receive, processing completion и acquisition latency. Camera содержит publication sequence и processing completion. Сопоставление выполняется по ближайшему monotonic timestamp, не по sequence.
 
