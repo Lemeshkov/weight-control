@@ -140,3 +140,20 @@ async def add_diagnostic_marker(marker: DiagnosticMarker):
     if not diagnostic_recorder.marker(label):
         raise HTTPException(status_code=409, detail="Diagnostic recording inactive or invalid marker")
     return {"recorded": True, "label": label}
+
+
+@router.get("/debug/diagnostics/status")
+async def get_diagnostic_status():
+    """Controlled-test recorder status; does not affect camera/status contract."""
+    return diagnostic_recorder.status()
+
+
+@router.post("/debug/diagnostics/finish")
+async def finish_diagnostic_recording():
+    """Explicitly flush and finish an active controlled-test recording."""
+    if not diagnostic_recorder.active:
+        raise HTTPException(status_code=409, detail="Diagnostic recording inactive")
+    finished = await asyncio.to_thread(diagnostic_recorder.finish)
+    if not finished:
+        raise HTTPException(status_code=409, detail="Diagnostic recording inactive")
+    return {"finished": True, "diagnostic_active": False}

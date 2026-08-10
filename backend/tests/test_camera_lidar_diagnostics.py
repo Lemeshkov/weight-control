@@ -1,4 +1,6 @@
 import csv
+import asyncio
+import importlib
 import json
 import time
 from pathlib import Path
@@ -11,6 +13,9 @@ from scripts.analyze_camera_lidar_session import analyze_session, nearest_matche
 from services.camera_client import CV2_AVAILABLE, CameraClient
 from services.camera_lidar_diagnostic_recorder import CameraLidarDiagnosticRecorder
 from services.lidar_client import LidarClient
+from services.lidar_profile_buffer import LidarProfileBuffer
+from services.lidar_pass_storage import AtomicLidarPassStorage
+from services.lidar_session_repository import InMemoryLidarSessionRepository
 from routers import camera as camera_router
 
 
@@ -200,3 +205,142 @@ def test_marker_endpoint_rejects_after_session_finished(tmp_path, monkeypatch):
 
     response = TestClient(app).post("/api/camera/debug/diagnostics/marker", json={"label": "STOPPED"})
     assert response.status_code == 409
+
+
+def test_extended_diagnostic_survives_production_finalize_until_explicit_finish(tmp_path, monkeypatch):
+    recorder = CameraLidarDiagnosticRecorder(
+        enabled=True,
+        base_dir=tmp_path,
+        camera_max_fps=0,
+        extended_session=True,
+        post_finalize_grace_sec=60,
+    )
+    recorder.start("same-session-key", started_at="2026-08-10T07:02:43+00:00", trip_id=13)
+    recorder.record_event("SESSION_OPENED", scale_state="LoadScale")
+    recorder.record_event("SESSION_FINALIZED", coordinator_status="COMPLETED")
+    recorder.production_finalized(ended_at="2026-08-10T07:02:56+00:00")
+
+    monkeypatch.setattr(camera_router, "diagnostic_recorder", recorder)
+    app = FastAPI(); app.include_router(camera_router.router)
+    client = TestClient(app)
+
+    status = client.get("/api/camera/debug/diagnostics/status")
+    assert status.status_code == 200
+    assert status.json()["diagnostic_active"] is True
+    assert status.json()["session_key"] == "same-session-key"
+    assert client.post("/api/camera/debug/diagnostics/marker", json={"label": "STOPPED"}).status_code == 200
+
+    recorder.record_lidar({
+        "format_version": 2,
+        "sequence_number": 101,
+        "captured_monotonic_ns": time.monotonic_ns(),
+        "ranges_raw": [1000, 1001],
+    })
+    recorder.record_camera({
+        "sequence_number": 202,
+        "captured_utc": "2026-08-10T07:03:00+00:00",
+        "captured_monotonic_ns": time.monotonic_ns(),
+        "jpeg": b"jpeg-after-production-finalize",
+        "width": 10,
+        "height": 10,
+    })
+    recorder.record_event("SCALE_SNAPSHOT", scale_state="Empty", weight_kg=0, stable=True)
+    assert client.post("/api/camera/debug/diagnostics/marker", json={"label": "RESUMED"}).status_code == 200
+    finish = client.post("/api/camera/debug/diagnostics/finish")
+    assert finish.status_code == 200
+    assert finish.json()["diagnostic_active"] is False
+    assert client.post("/api/camera/debug/diagnostics/marker", json={"label": "STOPPED"}).status_code == 409
+
+    session = tmp_path / "same-session-key"
+    manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
+    markers = [json.loads(line) for line in (session / "markers.jsonl").read_text(encoding="utf-8").splitlines()]
+    lidar = (session / "lidar" / "raw_scans.jsonl").read_text(encoding="utf-8").splitlines()
+    frames = list((session / "camera").glob("*.jpg"))
+    assert manifest["status"] == "COMPLETED"
+    assert manifest["session_key"] == "same-session-key"
+    assert manifest["record_counts"]["markers"] == 2
+    assert manifest["record_counts"]["lidar"] == 1
+    assert manifest["record_counts"]["camera"] == 1
+    assert manifest["errors"] == []
+    assert manifest["diagnostic_lifecycle"]["finish_reason"] == "EXPLICIT_FINISH"
+    assert [item["payload"]["label"] for item in markers] == ["STOPPED", "RESUMED"]
+    assert len(lidar) == 1
+    assert len(frames) == 1
+
+
+def test_extended_diagnostic_finishes_after_grace_timeout(tmp_path):
+    recorder = CameraLidarDiagnosticRecorder(
+        enabled=True,
+        base_dir=tmp_path,
+        extended_session=True,
+        post_finalize_grace_sec=0.02,
+    )
+    recorder.start("timeout", started_at="2026-08-10T07:02:43+00:00")
+    recorder.production_finalized(ended_at="2026-08-10T07:02:56+00:00")
+    deadline = time.time() + 2
+    while recorder.active and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert recorder.active is False
+    assert recorder.marker("STOPPED") is False
+    manifest = json.loads((tmp_path / "timeout" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "COMPLETED"
+    assert manifest["diagnostic_lifecycle"]["finish_reason"] == "POST_FINALIZE_GRACE_TIMEOUT"
+
+
+def test_non_extended_diagnostic_still_finishes_with_production_session(tmp_path):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path, extended_session=False)
+    recorder.start("normal", started_at="2026-08-10T07:02:43+00:00")
+    recorder.production_finalized(ended_at="2026-08-10T07:02:56+00:00")
+    deadline = time.time() + 2
+    while recorder.active and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert recorder.active is False
+    manifest = json.loads((tmp_path / "normal" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["diagnostic_lifecycle"]["finish_reason"] == "PRODUCTION_FINALIZED"
+
+
+def test_coordinator_finalize_leaves_extended_recorder_and_scale_timeline_active(tmp_path, monkeypatch):
+    module = importlib.import_module("services.weighing_lidar_coordinator")
+    recorder = CameraLidarDiagnosticRecorder(
+        enabled=True, base_dir=tmp_path / "diagnostics",
+        extended_session=True, post_finalize_grace_sec=60,
+    )
+    monkeypatch.setattr(module, "diagnostic_recorder", recorder)
+
+    class ConnectedClient:
+        is_connected = True
+
+    buffer = LidarProfileBuffer(client=ConnectedClient(), buffer_seconds=5, max_count=10)
+    buffer.add_profile([1000], captured_at=module.utc_now())
+    coordinator = module.WeighingLidarCoordinator(
+        buffer=buffer,
+        repository=InMemoryLidarSessionRepository(),
+        storage=AtomicLidarPassStorage(str(tmp_path / "passes")),
+        stable_confirm_samples=1,
+        post_stable_seconds=0,
+    )
+
+    def scale(state, weight, stable):
+        return {"full_response": {"StateName": state, "Massa": weight, "Stabil": stable}}
+
+    async def scenario():
+        await coordinator.on_scale_snapshot(scale("LoadScale", 500, False))
+        session_key = coordinator.active_session.session_key
+        await coordinator.on_scale_snapshot(scale("Weighing", 1500, True))
+        await coordinator._finish_task
+        assert coordinator.active_session is None
+        assert recorder.active is True
+        await coordinator.on_scale_snapshot(scale("Empty", 0, True))
+        return session_key
+
+    session_key = asyncio.run(scenario())
+    recorder.finish()
+
+    session = tmp_path / "diagnostics" / session_key
+    events = [json.loads(line) for line in (session / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(
+        item["event"] == "SCALE_SNAPSHOT" and item["payload"]["scale_state"] == "Empty"
+        for item in events
+    )

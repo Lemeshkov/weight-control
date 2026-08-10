@@ -12,13 +12,31 @@ DIAGNOSTIC_DATA_DIR=C:\weight-control-data\diagnostics
 DIAGNOSTIC_MAX_DURATION_SEC=900
 DIAGNOSTIC_QUEUE_SIZE=500
 DIAGNOSTIC_MAX_BYTES=2147483648
+CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION=true
+DIAGNOSTIC_POST_FINALIZE_GRACE_SEC=60
 ```
 
 Перезапустите backend. Для выключения установите `CAMERA_LIDAR_DIAGNOSTIC_RECORDING=false` и снова перезапустите. При `false` каталоги и файлы не создаются.
 
 ## Что и когда записывается
 
-Запись начинается при открытии существующей `LidarPassSession` на `LoadScale` и завершается ровно там, где её сейчас завершает coordinator. Это специально позволяет увидеть фактическое production-поведение при остановке. Trip ID может быть привязан позднее: manifest обновляется, событие `TRIP_BOUND` попадает в timeline.
+Запись начинается при открытии существующей `LidarPassSession` на `LoadScale`. При выключенном `CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION` она, как прежде, завершается вместе с production session. При включённом controlled-test режиме production session завершается по неизменным правилам, а diagnostic recorder продолжает получать camera frames, raw profiles из общего `LidarProfileBuffer`, scale snapshots и markers. Trip ID может быть привязан позднее: manifest обновляется, событие `TRIP_BOUND` попадает в timeline.
+
+После production finalize запускается независимый grace timer `DIAGNOSTIC_POST_FINALIZE_GRACE_SEC`. Запись завершается первым из двух способов:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/camera/debug/diagnostics/finish
+```
+
+либо автоматически по grace timeout. Explicit finish следует вызывать после окончательного физического выезда. Он не создаёт Trip, не меняет `LidarPassSession` и только flush-ит diagnostic writer.
+
+Перед marker проверить активность и исходный `session_key`:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/camera/debug/diagnostics/status
+```
+
+Ответ содержит `diagnostic_active`, `session_key`, `extended_session`, production finalize timestamp и оставшееся grace time. После finish/timeout markers снова получают 409.
 
 Camera recorder — listener единственного существующего `CameraClient`. Он не подключается к камере, не создаёт второй client/capture thread и получает каждый опубликованный JPEG непосредственно из producer. Frames сохраняются отдельно: это больше файлов, зато нет ложного предположения constant FPS и каждый frame однозначно связан с собственным timestamp.
 

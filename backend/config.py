@@ -53,6 +53,12 @@ class Settings:
     DIAGNOSTIC_QUEUE_SIZE: int = int(os.getenv("DIAGNOSTIC_QUEUE_SIZE", "500"))
     DIAGNOSTIC_MAX_BYTES: int = int(os.getenv("DIAGNOSTIC_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
     DIAGNOSTIC_CAMERA_MAX_FPS: float = float(os.getenv("DIAGNOSTIC_CAMERA_MAX_FPS", "5"))
+    CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION: bool = os.getenv(
+        "CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION", "false"
+    ).lower() in {"1", "true", "yes", "on"}
+    DIAGNOSTIC_POST_FINALIZE_GRACE_SEC: float = float(
+        os.getenv("DIAGNOSTIC_POST_FINALIZE_GRACE_SEC", "60")
+    )
 
     # File storage
     PHOTO_STORAGE_PATH: str = os.getenv("PHOTO_STORAGE_PATH", "/data/photos")

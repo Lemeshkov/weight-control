@@ -335,7 +335,7 @@ class WeighingLidarCoordinator:
             "SESSION_FINALIZED", coordinator_status=session.status,
             workflow_state=session.workflow_state,
         )
-        diagnostic_recorder.stop_in_background(
+        diagnostic_recorder.production_finalized(
             ended_at=session.completed_at.isoformat() if session.completed_at else None,
         )
         self.active_session = None
@@ -358,12 +358,14 @@ class WeighingLidarCoordinator:
             if state_changed and state_name == "LoadScale":
                 await self._open_session(snapshot, now)
 
-            session = self.active_session
-            if session is not None:
+            if diagnostic_recorder.active:
                 diagnostic_recorder.record_event(
                     "SCALE_SNAPSHOT", scale_state=state_name, weight_kg=snapshot["massa"],
                     stable=snapshot["stabil"], state_changed=state_changed,
                 )
+
+            session = self.active_session
+            if session is not None:
                 self._last_stable_sample_at = now
                 self._log_fsm(session, snapshot)
                 self._sync_profiles(session)

@@ -21,21 +21,32 @@ class CameraLidarDiagnosticRecorder:
     """Non-blocking, opt-in writer for one physical pass."""
 
     def __init__(self, *, enabled=None, base_dir=None, queue_size=None, max_duration_sec=None, max_bytes=None,
-                 camera_max_fps=None):
+                 camera_max_fps=None, extended_session=None, post_finalize_grace_sec=None):
         self.enabled = settings.CAMERA_LIDAR_DIAGNOSTIC_RECORDING if enabled is None else enabled
         self.base_dir = Path(base_dir or settings.DIAGNOSTIC_DATA_DIR)
         self.queue_size = queue_size or settings.DIAGNOSTIC_QUEUE_SIZE
         self.max_duration_sec = max_duration_sec or settings.DIAGNOSTIC_MAX_DURATION_SEC
         self.max_bytes = max_bytes or settings.DIAGNOSTIC_MAX_BYTES
         self.camera_max_fps = settings.DIAGNOSTIC_CAMERA_MAX_FPS if camera_max_fps is None else camera_max_fps
+        self.extended_session = (
+            settings.CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION
+            if extended_session is None else extended_session
+        )
+        self.post_finalize_grace_sec = (
+            settings.DIAGNOSTIC_POST_FINALIZE_GRACE_SEC
+            if post_finalize_grace_sec is None else post_finalize_grace_sec
+        )
         self._queue: queue.Queue = queue.Queue(maxsize=self.queue_size)
         self._thread: threading.Thread | None = None
         self._session_dir: Path | None = None
         self._manifest: dict[str, Any] = {}
         self._lock = threading.Lock()
+        self._stop_lock = threading.Lock()
         self._bytes_written = 0
         self._camera_sequences_seen: set[int] = set()
         self._last_camera_recorded_monotonic_ns: Optional[int] = None
+        self._finish_timer: Optional[threading.Timer] = None
+        self._production_finalized_monotonic_ns: Optional[int] = None
 
     @property
     def active(self) -> bool:
@@ -61,6 +72,7 @@ class CameraLidarDiagnosticRecorder:
         self._bytes_written = 0
         self._camera_sequences_seen = set()
         self._last_camera_recorded_monotonic_ns = None
+        self._production_finalized_monotonic_ns = None
         self._manifest = {
             "format_version": 2, "status": "RECORDING", "session_key": session_key,
             "trip_id": trip_id, "started_at": started_at, "started_monotonic_ns": time.monotonic_ns(),
@@ -69,6 +81,11 @@ class CameraLidarDiagnosticRecorder:
             "record_counts": {"lidar": 0, "camera": 0, "events": 0, "markers": 0},
             "camera_duplicate_sequence_count": 0,
             "camera_sampled_out_count": 0,
+            "diagnostic_lifecycle": {
+                "extended_session": self.extended_session,
+                "production_finalized_at": None,
+                "finish_reason": None,
+            },
             "dropped_record_count": 0, "errors": [],
             "limits": {
                 "max_duration_sec": self.max_duration_sec,
@@ -155,6 +172,50 @@ class CameraLidarDiagnosticRecorder:
         })
         return True
 
+    def production_finalized(self, *, ended_at: str | None = None) -> None:
+        """React to production finalization without changing production lifecycle."""
+        if not self.active:
+            return
+        finalized_at = ended_at or datetime.now(timezone.utc).isoformat()
+        self._manifest["diagnostic_lifecycle"]["production_finalized_at"] = finalized_at
+        self._production_finalized_monotonic_ns = time.monotonic_ns()
+        if not self.extended_session:
+            self.stop_in_background(ended_at=finalized_at, reason="PRODUCTION_FINALIZED")
+            return
+        self.record_event(
+            "DIAGNOSTIC_GRACE_STARTED",
+            grace_seconds=self.post_finalize_grace_sec,
+            production_finalized_at=finalized_at,
+        )
+        if self._finish_timer:
+            self._finish_timer.cancel()
+        self._finish_timer = threading.Timer(
+            self.post_finalize_grace_sec,
+            self.stop,
+            kwargs={"reason": "POST_FINALIZE_GRACE_TIMEOUT"},
+        )
+        self._finish_timer.daemon = True
+        self._finish_timer.start()
+
+    def status(self) -> dict:
+        remaining = None
+        if self.active and self._production_finalized_monotonic_ns is not None:
+            elapsed = (time.monotonic_ns() - self._production_finalized_monotonic_ns) / 1e9
+            remaining = max(0.0, self.post_finalize_grace_sec - elapsed)
+        return {
+            "diagnostic_active": self.active,
+            "session_key": self._manifest.get("session_key") if self.active else None,
+            "extended_session": self.extended_session,
+            "production_finalized_at": self._manifest.get("diagnostic_lifecycle", {}).get("production_finalized_at"),
+            "grace_remaining_sec": round(remaining, 3) if remaining is not None else None,
+        }
+
+    def finish(self) -> bool:
+        if not self.active:
+            return False
+        self.stop(reason="EXPLICIT_FINISH")
+        return True
+
     def _append_jsonl(self, relative: str, payload: dict) -> None:
         encoded = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         with (self._session_dir / relative).open("ab") as handle:
@@ -205,26 +266,31 @@ class CameraLidarDiagnosticRecorder:
             temporary.write_text(json.dumps(self._manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             temporary.replace(target)
 
-    def stop(self, *, ended_at: str | None = None) -> None:
-        if not self.active:
-            return
-        self._queue.put(None)
-        if self._thread:
-            self._thread.join(timeout=10)
-        self._manifest["ended_at"] = ended_at or datetime.now(timezone.utc).isoformat()
-        if self._manifest["status"] == "RECORDING": self._manifest["status"] = "COMPLETED"
-        self._manifest["bytes_written"] = self._bytes_written
-        self._write_manifest()
-        self._session_dir = None
-        self._thread = None
+    def stop(self, *, ended_at: str | None = None, reason: str = "SHUTDOWN") -> None:
+        with self._stop_lock:
+            if not self.active:
+                return
+            if self._finish_timer:
+                self._finish_timer.cancel()
+                self._finish_timer = None
+            self._queue.put(None)
+            if self._thread:
+                self._thread.join(timeout=10)
+            self._manifest["ended_at"] = ended_at or datetime.now(timezone.utc).isoformat()
+            self._manifest["diagnostic_lifecycle"]["finish_reason"] = reason
+            if self._manifest["status"] == "RECORDING": self._manifest["status"] = "COMPLETED"
+            self._manifest["bytes_written"] = self._bytes_written
+            self._write_manifest()
+            self._session_dir = None
+            self._thread = None
 
-    def stop_in_background(self, *, ended_at: str | None = None) -> None:
+    def stop_in_background(self, *, ended_at: str | None = None, reason: str = "BACKGROUND_STOP") -> None:
         """Flush without making the production coordinator wait under its lock."""
         if not self.active:
             return
         threading.Thread(
             target=self.stop,
-            kwargs={"ended_at": ended_at},
+            kwargs={"ended_at": ended_at, "reason": reason},
             name="diagnostic-stopper",
             daemon=True,
         ).start()
