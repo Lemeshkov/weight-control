@@ -50,6 +50,9 @@ sick_diagnostic/*.txt
 sick_diagnostic/*.json
 !sick_diagnostic/*.py
 
+
+diagnostics/
+
 # FastAPI
 backend/.mypy_cache/
 backend/.pytest_cache/
@@ -161,4 +164,4 @@ Icon
 # Environment variables
 .env
 .env.backend
-.env.frontend
+.env.frontenddiagnostics/
