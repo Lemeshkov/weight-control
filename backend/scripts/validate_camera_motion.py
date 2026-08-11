@@ -46,6 +46,8 @@ class ValidationCriteria:
 
 FIXED_CANDIDATE = FrozenFarnebackCandidate()
 FIXED_CRITERIA = ValidationCriteria()
+PRESENCE_MARKERS = ("VEHICLE_ENTERED", "VEHICLE_EXITED")
+STOP_RESUME_MARKERS = ("VEHICLE_ENTERED", "STOPPED", "RESUMED", "VEHICLE_EXITED")
 
 
 def parse_ground_truth(path: Path, scenario: Scenario) -> tuple[dict[str, int], list[str]]:
@@ -53,14 +55,18 @@ def parse_ground_truth(path: Path, scenario: Scenario) -> tuple[dict[str, int], 
     if path.is_file():
         for record in read_jsonl(path):
             label = str(record.get("payload", {}).get("label", record.get("label", ""))).upper()
-            if label in {"STOPPED", "RESUMED"} and label not in found:
+            if label in STOP_RESUME_MARKERS:
+                if label in found:
+                    return found, [f"DUPLICATE_{label}"]
                 found[label] = int(record["captured_monotonic_ns"])
-    if scenario == "no-stop":
-        return {}, []
-    missing = [label for label in ("STOPPED", "RESUMED") if label not in found]
-    if not missing and found["RESUMED"] <= found["STOPPED"]:
-        return found, ["RESUMED_NOT_AFTER_STOPPED"]
-    return found, missing
+    required = PRESENCE_MARKERS if scenario == "no-stop" else STOP_RESUME_MARKERS
+    missing = [label for label in required if label not in found]
+    if missing:
+        return found, missing
+    timestamps = [found[label] for label in required]
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+        return found, ["INVALID_MARKER_ORDER"]
+    return found, []
 
 
 def fixed_hysteresis(rows: list[dict[str, Any]], candidate: FrozenFarnebackCandidate = FIXED_CANDIDATE) -> list[dict[str, Any]]:
@@ -95,13 +101,15 @@ def transitions(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def truth_at(timestamp: int, scenario: Scenario, ground_truth: dict[str, int]) -> str:
+    required = PRESENCE_MARKERS if scenario == "no-stop" else STOP_RESUME_MARKERS
+    if any(label not in ground_truth for label in required):
+        return "UNKNOWN"
+    entered, exited = ground_truth["VEHICLE_ENTERED"], ground_truth["VEHICLE_EXITED"]
+    if timestamp < entered or timestamp >= exited:
+        return "NO_VEHICLE"
     if scenario == "no-stop":
         return "MOVING"
-    if "STOPPED" not in ground_truth or "RESUMED" not in ground_truth:
-        return "UNKNOWN"
-    # A profile captured exactly with RESUMED still belongs to the stopped
-    # interval; longitudinal advancement may resume only after that marker.
-    return "STOPPED" if ground_truth["STOPPED"] <= timestamp <= ground_truth["RESUMED"] else "MOVING"
+    return "STOPPED" if ground_truth["STOPPED"] <= timestamp < ground_truth["RESUMED"] else "MOVING"
 
 
 def duration_metrics(timeline: list[dict[str, Any]], scenario: Scenario,
@@ -110,16 +118,22 @@ def duration_metrics(timeline: list[dict[str, Any]], scenario: Scenario,
                  "STOPPED_MOVING": 0.0, "STOPPED_STOPPED": 0.0,
                  "UNKNOWN": 0.0}
     stopped_runs, current_run = [], 0.0
+    excluded_before = excluded_after = vehicle_present = 0.0
     for index, row in enumerate(timeline[:-1]):
         left, right = int(row["timestamp_ns"]), int(timeline[index + 1]["timestamp_ns"])
         boundaries = [left]
-        if scenario == "stop-resume":
-            boundaries += [value for value in ground_truth.values() if left < value < right]
+        boundaries += [value for value in ground_truth.values() if left < value < right]
         boundaries.append(right)
         for start, end in zip(sorted(boundaries), sorted(boundaries)[1:]):
             duration = (end - start) / 1e6
             actual = truth_at(start, scenario, ground_truth)
             predicted = row["predicted_state"]
+            if actual == "NO_VEHICLE":
+                if start < ground_truth.get("VEHICLE_ENTERED", start): excluded_before += duration
+                else: excluded_after += duration
+                if current_run: stopped_runs.append(current_run); current_run = 0.0
+                continue
+            if actual != "UNKNOWN": vehicle_present += duration
             if actual == "UNKNOWN" or predicted == "UNKNOWN":
                 confusion["UNKNOWN"] += duration
             else:
@@ -130,7 +144,8 @@ def duration_metrics(timeline: list[dict[str, Any]], scenario: Scenario,
                 stopped_runs.append(current_run); current_run = 0.0
     if current_run:
         stopped_runs.append(current_run)
-    changed = transitions(timeline)
+    changed = [item for item in transitions(timeline)
+               if truth_at(item["timestamp_ns"], scenario, ground_truth) not in {"NO_VEHICLE", "UNKNOWN"}]
     total = sum(confusion.values())
     correct = confusion["MOVING_MOVING"] + confusion["STOPPED_STOPPED"]
     metrics: dict[str, Any] = {
@@ -142,13 +157,16 @@ def duration_metrics(timeline: list[dict[str, Any]], scenario: Scenario,
         "total_predicted_transitions": len(changed),
         "predicted_stopped_duration_ms": sum(stopped_runs),
         "maximum_continuous_false_stop_duration_ms": max(stopped_runs, default=0.0) if scenario == "no-stop" else None,
+        "vehicle_present_duration_ms": vehicle_present,
+        "excluded_before_entry_ms": excluded_before,
+        "excluded_after_exit_ms": excluded_after,
     }
     if scenario == "no-stop":
         metrics.update({"predicted_stop_occurred": any(x["state"] == "STOPPED" for x in changed),
                         "false_stop_transitions": sum(x["state"] == "STOPPED" for x in changed),
                         "false_resume_transitions": 0})
         return metrics
-    if truth_at(int(timeline[0]["timestamp_ns"]), scenario, ground_truth) == "UNKNOWN":
+    if any(label not in ground_truth for label in STOP_RESUME_MARKERS):
         metrics.update({"manual_stop_timestamp_ns": ground_truth.get("STOPPED"), "manual_resume_timestamp_ns": ground_truth.get("RESUMED")})
         return metrics
     stop, resume = ground_truth["STOPPED"], ground_truth["RESUMED"]
@@ -175,7 +193,9 @@ def simulate_profiles(profiles: list[dict[str, Any]], timeline: list[dict[str, A
             camera_index += 1
         predicted = timeline[camera_index]["predicted_state"] if camera_index >= 0 else "UNKNOWN"
         actual = truth_at(timestamp, scenario, ground_truth)
-        action = "ACCEPT" if predicted == "MOVING" else "FREEZE" if predicted == "STOPPED" else "UNKNOWN"
+        action = ("EXCLUDE" if actual == "NO_VEHICLE" else
+                  "UNKNOWN" if actual == "UNKNOWN" or predicted == "UNKNOWN" else
+                  "ACCEPT" if predicted == "MOVING" else "FREEZE")
         result.append({"profile_index": profile_index, "timestamp": timestamp,
                        "ground_truth_state": actual, "predicted_state": predicted,
                        "slice_action": action,
@@ -189,6 +209,7 @@ def simulate_profiles(profiles: list[dict[str, Any]], timeline: list[dict[str, A
         "moving_profiles_incorrectly_frozen": sum(x["ground_truth_state"] == "MOVING" and x["slice_action"] == "FREEZE" for x in result),
         "stationary_profiles_incorrectly_accepted": sum(x["ground_truth_state"] == "STOPPED" and x["slice_action"] == "ACCEPT" for x in result),
         "unknown_profiles": sum(x["slice_action"] == "UNKNOWN" for x in result),
+        "excluded_profiles": sum(x["slice_action"] == "EXCLUDE" for x in result),
     }
     return result, summary
 
@@ -251,6 +272,7 @@ def validate(session: Path, scenario: Scenario, output: Path | None = None) -> d
     manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
     session_key = str(manifest.get("session_key") or session.name)
     ground_truth, missing = parse_ground_truth(session / "markers.jsonl", scenario)
+    metric_ground_truth = ground_truth if not missing else {}
     frame_rows = load_frame_rows(session, verify_hashes=True)
     camera_scores, previous = [], None
     for frame in frame_rows:
@@ -266,13 +288,13 @@ def validate(session: Path, scenario: Scenario, output: Path | None = None) -> d
         previous = (int(frame["captured_monotonic_ns"]), image)
     timeline = fixed_hysteresis(camera_scores)
     for row in timeline:
-        row["ground_truth_state"] = truth_at(int(row["timestamp_ns"]), scenario, ground_truth)
-    metrics = duration_metrics(timeline, scenario, ground_truth)
+        row["ground_truth_state"] = truth_at(int(row["timestamp_ns"]), scenario, metric_ground_truth)
+    metrics = duration_metrics(timeline, scenario, metric_ground_truth)
     scores = np.array([x["motion_score"] for x in timeline])
     metrics["motion_score_distribution"] = {"minimum": float(np.min(scores)), "p01": float(np.percentile(scores, 1)),
                                              "p05": float(np.percentile(scores, 5)), "p10": float(np.percentile(scores, 10))}
     profiles = read_jsonl(session / "lidar" / "raw_scans.jsonl")
-    profile_rows, slice_summary = simulate_profiles(profiles, timeline, scenario, ground_truth)
+    profile_rows, slice_summary = simulate_profiles(profiles, timeline, scenario, metric_ground_truth)
     complete = not missing
     checks, overall = criteria_result(scenario, metrics, slice_summary, complete)
     dataset_role = "TUNING" if session_key == TUNING_SESSION_KEY else "VALIDATION"

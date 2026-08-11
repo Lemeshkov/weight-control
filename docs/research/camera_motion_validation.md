@@ -15,13 +15,24 @@ STOP/RESUME transitions, задержки не более 3000/1500 ms, ошиб
 fraction не менее 90%. Для `no-stop`: ни одного false STOP transition, нулевая false
 STOP duration и ни одного ошибочно замороженного moving profile.
 
+## Ground-truth markers
+
+Поддерживаются `MOVING`, `STOPPED`, `RESUMED`, `VEHICLE_ENTERED` и
+`VEHICLE_EXITED`. Это только diagnostic annotations в существующем
+`markers.jsonl`; они не управляют Trip, FSM, LiDAR или lifecycle записи.
+
+Active interval задаётся как `[VEHICLE_ENTERED, VEHICLE_EXITED)`. Вне него
+ground truth равен `NO_VEHICLE`, camera metrics не считаются, а LiDAR profile
+получает `EXCLUDE`.
+
 ## Новый проезд с остановкой
 
 1. Запустить backend и проверить, что diagnostic recording active.
-2. Начать физический проезд.
-3. При полной остановке отправить marker `STOPPED`.
-4. При фактическом начале движения отправить marker `RESUMED`.
-5. После полного выезда выполнить explicit diagnostic finish.
+2. При появлении машины в рабочей зоне отправить `VEHICLE_ENTERED`.
+3. При полной остановке отправить `STOPPED`.
+4. При фактическом начале движения отправить `RESUMED`.
+5. После полного выхода из рабочей зоны отправить `VEHICLE_EXITED`.
+6. Выполнить explicit diagnostic finish.
 6. Скопировать всю папку новой session в локальную `diagnostics/`.
 7. Из папки `backend` выполнить:
 
@@ -31,13 +42,15 @@ STOP duration и ни одного ошибочно замороженного m
   --scenario stop-resume
 ```
 
+Обязателен строгий порядок `VEHICLE_ENTERED < STOPPED < RESUMED < VEHICLE_EXITED`.
 Если хотя бы одного marker нет или порядок некорректен, результат будет
 `GROUND_TRUTH_INCOMPLETE`; отсутствие marker никогда не трактуется как `NO_STOP`.
 
 ## Проезд без остановки
 
-Оператор заранее выбирает сценарий без остановки. После полного проезда и explicit
-finish выполнить:
+Оператор заранее выбирает сценарий без остановки: при входе ставит
+`VEHICLE_ENTERED`, при полном выходе — `VEHICLE_EXITED`, затем выполняет finish.
+Обязателен порядок `VEHICLE_ENTERED < VEHICLE_EXITED`. После копирования выполнить:
 
 ```powershell
 ..\venv_weight\Scripts\python.exe scripts\validate_camera_motion.py `
@@ -46,6 +59,28 @@ finish выполнить:
 ```
 
 Именно явный `--scenario no-stop` задаёт ground truth `MOVING` на всём интервале.
+
+## Готовые PowerShell-команды
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/camera/debug/diagnostics/marker' -ContentType 'application/json' -Body '{"label":"VEHICLE_ENTERED"}'
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/camera/debug/diagnostics/marker' -ContentType 'application/json' -Body '{"label":"STOPPED"}'
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/camera/debug/diagnostics/marker' -ContentType 'application/json' -Body '{"label":"RESUMED"}'
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/camera/debug/diagnostics/marker' -ContentType 'application/json' -Body '{"label":"VEHICLE_EXITED"}'
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/camera/debug/diagnostics/finish'
+```
 
 Отчёт находится в:
 

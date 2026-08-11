@@ -187,6 +187,7 @@ def test_active_marker_endpoint_writes_marker_contract(tmp_path, monkeypatch):
     records = [json.loads(line) for line in (session / "markers.jsonl").read_text(encoding="utf-8").splitlines()]
     assert records == [{
         "type": "marker", "event": "OPERATOR_MARKER",
+        "session_key": "marker",
         "captured_utc": records[0]["captured_utc"],
         "captured_monotonic_ns": records[0]["captured_monotonic_ns"],
         "payload": {"label": "STOPPED"},
@@ -194,6 +195,26 @@ def test_active_marker_endpoint_writes_marker_contract(tmp_path, monkeypatch):
     manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["record_counts"]["markers"] == 1
     assert manifest["status"] == "COMPLETED"
+
+
+def test_vehicle_presence_markers_are_accepted_and_persisted(tmp_path, monkeypatch):
+    recorder = CameraLidarDiagnosticRecorder(enabled=True, base_dir=tmp_path)
+    recorder.start("presence", started_at="2026-08-11T07:00:00+00:00")
+    monkeypatch.setattr(camera_router, "diagnostic_recorder", recorder)
+    app = FastAPI(); app.include_router(camera_router.router)
+    client = TestClient(app)
+
+    for label in ("VEHICLE_ENTERED", "VEHICLE_EXITED"):
+        response = client.post("/api/camera/debug/diagnostics/marker", json={"label": label})
+        assert response.status_code == 200
+        assert response.json() == {"recorded": True, "label": label}
+    assert client.post("/api/camera/debug/diagnostics/marker", json={"label": "NOT_A_MARKER"}).status_code == 409
+    recorder.stop()
+
+    records = [json.loads(line) for line in (tmp_path / "presence" / "markers.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["payload"]["label"] for row in records] == ["VEHICLE_ENTERED", "VEHICLE_EXITED"]
+    assert all(row["session_key"] == "presence" for row in records)
+    assert all(row["captured_utc"] and isinstance(row["captured_monotonic_ns"], int) for row in records)
 
 
 def test_marker_endpoint_rejects_after_session_finished(tmp_path, monkeypatch):

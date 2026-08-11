@@ -68,14 +68,17 @@ def test_false_stop_is_accounted_by_time():
     timeline = [{"timestamp_ns": 0, "predicted_state": "MOVING"},
                 {"timestamp_ns": 1_000_000_000, "predicted_state": "STOPPED"},
                 {"timestamp_ns": 3_000_000_000, "predicted_state": "MOVING"}]
-    metrics = duration_metrics(timeline, "no-stop", {})
+    metrics = duration_metrics(timeline, "no-stop", {"VEHICLE_ENTERED": 0, "VEHICLE_EXITED": 3_000_000_000})
     assert metrics["false_stop_duration_ms"] == 2000
     assert metrics["maximum_continuous_false_stop_duration_ms"] == 2000
     assert metrics["false_stop_transitions"] == 1
 
 
 def test_no_stop_scenario_is_explicitly_all_moving():
-    assert truth_at(123, "no-stop", {}) == "MOVING"
+    markers = {"VEHICLE_ENTERED": 100, "VEHICLE_EXITED": 200}
+    assert truth_at(99, "no-stop", markers) == "NO_VEHICLE"
+    assert truth_at(123, "no-stop", markers) == "MOVING"
+    assert truth_at(201, "no-stop", markers) == "NO_VEHICLE"
 
 
 def test_missing_stop_resume_markers_is_incomplete(tmp_path):
@@ -83,25 +86,64 @@ def test_missing_stop_resume_markers_is_incomplete(tmp_path):
     path.write_text(json.dumps({"captured_monotonic_ns": 1, "payload": {"label": "STOPPED"}}), encoding="utf-8")
     ground_truth, missing = parse_ground_truth(path, "stop-resume")
     assert ground_truth == {"STOPPED": 1}
-    assert missing == ["RESUMED"]
+    assert missing == ["VEHICLE_ENTERED", "RESUMED", "VEHICLE_EXITED"]
 
 
 def test_no_stop_does_not_infer_from_missing_markers(tmp_path):
     ground_truth, missing = parse_ground_truth(tmp_path / "absent.jsonl", "no-stop")
-    assert ground_truth == {} and missing == []
+    assert ground_truth == {} and missing == ["VEHICLE_ENTERED", "VEHICLE_EXITED"]
+
+
+def test_stop_resume_marker_order_is_strict(tmp_path):
+    path = tmp_path / "markers.jsonl"
+    records = [("VEHICLE_ENTERED", 100), ("STOPPED", 200), ("RESUMED", 300), ("VEHICLE_EXITED", 400)]
+    path.write_text("\n".join(json.dumps({"captured_monotonic_ns": timestamp, "payload": {"label": label}})
+                               for label, timestamp in records), encoding="utf-8")
+    assert parse_ground_truth(path, "stop-resume") == ({label: timestamp for label, timestamp in records}, [])
+
+
+def test_invalid_marker_order_is_incomplete(tmp_path):
+    path = tmp_path / "markers.jsonl"
+    records = [("VEHICLE_ENTERED", 100), ("STOPPED", 300), ("RESUMED", 200), ("VEHICLE_EXITED", 400)]
+    path.write_text("\n".join(json.dumps({"captured_monotonic_ns": timestamp, "payload": {"label": label}})
+                               for label, timestamp in records), encoding="utf-8")
+    assert parse_ground_truth(path, "stop-resume")[1] == ["INVALID_MARKER_ORDER"]
 
 
 def test_profile_actions_include_accept_freeze_and_unknown():
     timeline = [{"timestamp_ns": 100, "predicted_state": "MOVING"},
-                {"timestamp_ns": 200, "predicted_state": "STOPPED"}]
-    profiles = [{"captured_monotonic_ns": value} for value in (50, 150, 250)]
-    rows, summary = simulate_profiles(profiles, timeline, "no-stop", {})
-    assert [row["slice_action"] for row in rows] == ["UNKNOWN", "ACCEPT", "FREEZE"]
+                {"timestamp_ns": 200, "predicted_state": "STOPPED"},
+                {"timestamp_ns": 300, "predicted_state": "UNKNOWN"}]
+    profiles = [{"captured_monotonic_ns": value} for value in (50, 150, 250, 350, 450)]
+    markers = {"VEHICLE_ENTERED": 100, "VEHICLE_EXITED": 400}
+    rows, summary = simulate_profiles(profiles, timeline, "no-stop", markers)
+    assert [row["slice_action"] for row in rows] == ["EXCLUDE", "ACCEPT", "FREEZE", "UNKNOWN", "EXCLUDE"]
     assert summary["unknown_profiles"] == 1
+    assert summary["excluded_profiles"] == 2
 
 
-def test_profile_at_resume_marker_remains_stationary():
-    assert truth_at(200, "stop-resume", {"STOPPED": 100, "RESUMED": 200}) == "STOPPED"
+def test_profile_at_resume_marker_is_moving():
+    markers = {"VEHICLE_ENTERED": 50, "STOPPED": 100, "RESUMED": 200, "VEHICLE_EXITED": 250}
+    assert truth_at(200, "stop-resume", markers) == "MOVING"
+
+
+def test_stop_resume_active_interval_states():
+    markers = {"VEHICLE_ENTERED": 100, "STOPPED": 200, "RESUMED": 300, "VEHICLE_EXITED": 400}
+    assert [truth_at(value, "stop-resume", markers) for value in (50, 150, 250, 350, 450)] == [
+        "NO_VEHICLE", "MOVING", "STOPPED", "MOVING", "NO_VEHICLE",
+    ]
+
+
+def test_false_stop_outside_vehicle_interval_is_excluded():
+    timeline = [{"timestamp_ns": 0, "predicted_state": "STOPPED"},
+                {"timestamp_ns": 100, "predicted_state": "STOPPED"},
+                {"timestamp_ns": 200, "predicted_state": "MOVING"},
+                {"timestamp_ns": 300, "predicted_state": "STOPPED"},
+                {"timestamp_ns": 400, "predicted_state": "STOPPED"}]
+    metrics = duration_metrics(timeline, "no-stop", {"VEHICLE_ENTERED": 100, "VEHICLE_EXITED": 300})
+    assert metrics["false_stop_duration_ms"] == 0.0001
+    assert metrics["excluded_before_entry_ms"] == 0.0001
+    assert metrics["excluded_after_exit_ms"] == 0.0001
 
 
 def test_pass_and_fail_criteria():

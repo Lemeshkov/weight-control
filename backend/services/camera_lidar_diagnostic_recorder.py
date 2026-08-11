@@ -16,6 +16,10 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+DIAGNOSTIC_MARKER_LABELS = {
+    "MOVING", "STOPPED", "RESUMED", "VEHICLE_ENTERED", "VEHICLE_EXITED",
+}
+
 
 class CameraLidarDiagnosticRecorder:
     """Non-blocking, opt-in writer for one physical pass."""
@@ -161,11 +165,12 @@ class CameraLidarDiagnosticRecorder:
             self.record_event("TRIP_BOUND", trip_id=trip_id)
 
     def marker(self, label: str) -> bool:
-        if label not in {"MOVING", "STOPPED", "RESUMED"} or not self.active:
+        if label not in DIAGNOSTIC_MARKER_LABELS or not self.active:
             return False
         self._enqueue("markers", {
             "type": "marker",
             "event": "OPERATOR_MARKER",
+            "session_key": self._manifest["session_key"],
             "captured_utc": datetime.now(timezone.utc).isoformat(),
             "captured_monotonic_ns": time.monotonic_ns(),
             "payload": {"label": label},
