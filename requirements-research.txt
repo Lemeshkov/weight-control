@@ -1,0 +1,2 @@
+# Offline research only; not imported by the production backend.
+ultralytics==8.4.117
