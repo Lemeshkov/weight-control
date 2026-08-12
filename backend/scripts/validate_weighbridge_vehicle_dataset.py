@@ -31,16 +31,21 @@ def validate(root: Path, *, allow_incomplete: bool = False, near_duplicate_dista
     for missing in sorted(manifest_images - disk_rel): errors.append(f"manifest image missing: {missing}")
     for orphan in sorted(disk_rel - manifest_images): errors.append(f"orphan image: {orphan}")
     positive = negative = 0
+    split_counts = {split: {"images": 0, "positive": 0, "negative": 0, "missing_labels": 0} for split in SPLITS}
     for image, split in images.items():
+        split_counts[split]["images"] += 1
         label = root / "labels" / split / f"{image.stem}.txt"
         if not label.exists():
+            split_counts[split]["missing_labels"] += 1
             (warnings if allow_incomplete else errors).append(f"missing label: {image.relative_to(root)}")
             continue
         try:
             parsed = parse_yolo_label(label)
             boxes.extend(parsed)
-            if parsed: positive += 1
-            else: negative += 1
+            if parsed:
+                positive += 1; split_counts[split]["positive"] += 1
+            else:
+                negative += 1; split_counts[split]["negative"] += 1
         except ValueError as exc: errors.append(str(exc))
     for label, split in labels.items():
         image = root / "images" / split / f"{label.stem}.jpg"
@@ -65,7 +70,8 @@ def validate(root: Path, *, allow_incomplete: bool = False, near_duplicate_dista
     warning_count = len(warnings)
     report = {"valid": not errors, "complete": all((root / "labels" / split / f"{image.stem}.txt").exists() for image, split in images.items()),
               "images": len(images), "labeled_positive_images": positive, "labeled_negative_images": negative,
-              "boxes": len(boxes), "bbox_area": {"min": min(sizes) if sizes else None, "median": float(np.median(sizes)) if sizes else None,
+              "boxes": len(boxes), "splits": split_counts,
+              "bbox_area": {"min": min(sizes) if sizes else None, "median": float(np.median(sizes)) if sizes else None,
               "max": max(sizes) if sizes else None}, "sessions_by_split": {s: sorted(k for k,v in session_splits.items() if s in v) for s in SPLITS},
               "manifest_status": dict(Counter(row["annotation_status"] for row in manifest)), "errors": errors,
               "warning_count": warning_count, "warnings": warnings[:100],

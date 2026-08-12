@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from scripts.evaluate_weighbridge_vehicle_detector import presence_metrics
+from scripts.normalize_weighbridge_vehicle_labels import normalize_box, normalize_file
 from scripts.prepare_weighbridge_vehicle_dataset import classify
 from scripts.validate_weighbridge_vehicle_dataset import validate
 from scripts.weighbridge_vehicle_dataset import parse_yolo_label, select_diverse
@@ -55,6 +56,7 @@ def test_manifest_session_split_and_leakage_validation(tmp_path):
     make_dataset(tmp_path)
     report = validate(tmp_path)
     assert report["valid"] and report["labeled_positive_images"] == 2 and report["labeled_negative_images"] == 1
+    assert report["splits"]["train"] == {"images": 1, "positive": 1, "negative": 0, "missing_labels": 0}
     # A manifest edit that puts one pass into another split must be rejected.
     manifest = tmp_path / "dataset_manifest.csv"
     manifest.write_text(manifest.read_text(encoding="utf-8").replace("images/val/s2.jpg,s2", "images/val/s2.jpg,s1"), encoding="utf-8")
@@ -77,3 +79,18 @@ def test_presence_and_gap_metrics():
     assert metrics["presence_recall"] == pytest.approx(2 / 3)
     assert metrics["longest_missed_frame_run"] == 1
     assert metrics["negative_false_positive_rate"] == 0
+
+
+def test_tiny_cvat_rounding_overflow_is_clipped_without_touching_valid_box(tmp_path):
+    clipped, overflow = normalize_box((0, .573379, .503108, .471113, .993785), tolerance=1e-5)
+    assert overflow == pytest.approx(5e-7)
+    assert clipped[2] + clipped[4] / 2 == pytest.approx(1.0)
+    valid = tmp_path / "valid.txt"; original = "0 0.500000 0.500000 0.400000 0.200000\n"
+    valid.write_text(original, encoding="utf-8")
+    assert normalize_file(valid, apply=True) == []
+    assert valid.read_text(encoding="utf-8") == original
+
+
+def test_material_bbox_overflow_is_rejected():
+    with pytest.raises(ValueError, match="exceeds tolerance"):
+        normalize_box((0, .5, .51, .4, 1.0), tolerance=1e-5)

@@ -29,6 +29,13 @@ Strict validation (training refuses incomplete or invalid data):
 ..\venv_weight\Scripts\python.exe scripts\validate_weighbridge_vehicle_dataset.py ..\diagnostics\training\weighbridge_vehicle\dataset
 ```
 
+CVAT can round a box exactly on an image edge a few decimal places outside the normalized boundary. Inspect first, then dry-run and apply the guarded normalizer. It clips only overflow up to `1e-5` and rejects larger geometry errors:
+
+```powershell
+..\venv_weight\Scripts\python.exe scripts\normalize_weighbridge_vehicle_labels.py ..\diagnostics\training\weighbridge_vehicle\dataset\labels\train
+..\venv_weight\Scripts\python.exe scripts\normalize_weighbridge_vehicle_labels.py ..\diagnostics\training\weighbridge_vehicle\dataset\labels\train --apply
+```
+
 CPU baseline:
 
 ```powershell
