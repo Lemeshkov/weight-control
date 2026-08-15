@@ -20,9 +20,12 @@ from routers import weighing, lidar, scan_3d, camera, control, coal_acceptance
 from services.lidar_profile_buffer import lidar_profile_buffer
 from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
+from services.development_motion_shadow import development_motion_shadow
 
 # The recorder subscribes to the existing singleton producer; it never opens a camera.
 diagnostic_recorder.attach_camera(camera.camera_client)
+development_motion_shadow.attach_camera(camera.camera_client)
+development_motion_shadow.attach_lidar(lidar_profile_buffer)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -388,6 +391,8 @@ async def shutdown_event():
     await scale_monitor.stop()
     await weighing_lidar_coordinator.stop()
     await lidar_profile_buffer.stop()
+    if development_motion_shadow.enabled:
+        development_motion_shadow.shutdown()
     logger.info("⏹ Scale monitor stopped")
     
     # if lidar_client:

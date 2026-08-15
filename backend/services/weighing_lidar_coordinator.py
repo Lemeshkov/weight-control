@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from config import settings
 from services.lidar_pass_storage import AtomicLidarPassStorage, lidar_pass_storage
 from services.lidar_profile_buffer import LidarProfile, LidarProfileBuffer, lidar_profile_buffer
 from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
+from services.development_motion_shadow import development_motion_shadow
 from services.lidar_session_repository import (
     InMemoryLidarSessionRepository,
     LidarSessionRepository,
@@ -348,6 +350,7 @@ class WeighingLidarCoordinator:
 
     async def on_scale_snapshot(self, data: dict) -> None:
         snapshot = self._normalise_snapshot(data)
+        development_motion_shadow.update_weight(time.monotonic_ns(), snapshot["massa"])
         now = utc_now()
         async with self._lock:
             self.scale_connected = True

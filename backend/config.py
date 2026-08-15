@@ -56,6 +56,9 @@ class Settings:
     CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION: bool = os.getenv(
         "CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION", "false"
     ).lower() in {"1", "true", "yes", "on"}
+    DEVELOPMENT_MOTION_SHADOW_ENABLED: bool = os.getenv(
+        "DEVELOPMENT_MOTION_SHADOW_ENABLED", "false"
+    ).lower() in {"1", "true", "yes", "on"}
     DIAGNOSTIC_POST_FINALIZE_GRACE_SEC: float = float(
         os.getenv("DIAGNOSTIC_POST_FINALIZE_GRACE_SEC", "60")
     )

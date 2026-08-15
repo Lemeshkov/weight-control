@@ -52,6 +52,11 @@ class LidarProfileBuffer:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self.last_error: Optional[str] = None
+        self._full_profile_listeners = []
+
+    def add_full_profile_listener(self, listener) -> None:
+        if listener not in self._full_profile_listeners:
+            self._full_profile_listeners.append(listener)
 
     @property
     def reader_running(self) -> bool:
@@ -140,7 +145,7 @@ class LidarProfileBuffer:
 
         raw_distances = await asyncio.to_thread(self.client.parse_raw_data, raw_data)
         diagnostic_scan = None
-        if diagnostic_recorder.active:
+        if diagnostic_recorder.active or self._full_profile_listeners:
             diagnostic_scan = await asyncio.to_thread(self.client.parse_diagnostic_scan, raw_data)
         angle_filtered = self.client.filter_angle(raw_distances, 70)
         valid_distances = self.client.filter_valid_distances(angle_filtered)
@@ -152,7 +157,7 @@ class LidarProfileBuffer:
         )
         processing_completed = time.monotonic_ns()
         if diagnostic_scan is not None:
-            diagnostic_recorder.record_lidar({
+            full_profile = {
                 "format_version": 2,
                 "sequence_number": profile.sequence_number,
                 "captured_utc": profile.captured_at,
@@ -168,7 +173,14 @@ class LidarProfileBuffer:
                     "max_valid_distance_mm": self.client.MAX_VALID_DISTANCE,
                     "ranges_mm": valid_distances,
                 },
-            })
+            }
+            for listener in tuple(self._full_profile_listeners):
+                try:
+                    listener(full_profile)
+                except Exception:
+                    logger.exception("Full LiDAR profile shadow listener failed")
+            if diagnostic_recorder.active:
+                diagnostic_recorder.record_lidar(full_profile)
         return profile
 
     async def _reader_loop(self) -> None:
