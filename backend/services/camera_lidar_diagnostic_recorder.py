@@ -51,6 +51,8 @@ class CameraLidarDiagnosticRecorder:
         self._last_camera_recorded_monotonic_ns: Optional[int] = None
         self._finish_timer: Optional[threading.Timer] = None
         self._production_finalized_monotonic_ns: Optional[int] = None
+        self._accepting = False
+        self._rollover_from: dict[str, Any] | None = None
 
     @property
     def active(self) -> bool:
@@ -69,17 +71,39 @@ class CameraLidarDiagnosticRecorder:
             return None
 
     def start(self, session_key: str, *, started_at: str, trip_id=None, camera_config=None) -> None:
-        if not self.enabled or self.active:
+        if not self.enabled:
             return
+        with self._stop_lock:
+            if self.active and self._manifest.get("session_key") == session_key:
+                return
+            rollover_from = None
+            if self.active:
+                rollover_from = {
+                    "old_session_key": self._manifest.get("session_key"),
+                    "old_trip_id": self._manifest.get("trip_id"),
+                    "new_session_key": session_key,
+                    "reason": "NEXT_TRIP_STARTED",
+                }
+                self.record_event(
+                    "DIAGNOSTIC_SESSION_ROLLOVER",
+                    **rollover_from,
+                    new_trip_id=None,
+                )
+                self._stop_locked(reason="NEXT_TRIP_STARTED")
         session_dir = self.base_dir / session_key
         self._session_dir = session_dir
+        self._queue = queue.Queue(maxsize=self.queue_size)
         self._bytes_written = 0
         self._camera_sequences_seen = set()
         self._last_camera_recorded_monotonic_ns = None
         self._production_finalized_monotonic_ns = None
         self._manifest = {
-            "format_version": 2, "status": "RECORDING", "session_key": session_key,
-            "trip_id": trip_id, "started_at": started_at, "started_monotonic_ns": time.monotonic_ns(),
+            "format_version": 2, "identity_binding_version": 1,
+            "status": "RECORDING", "session_key": session_key,
+            "trip_id": trip_id, "vehicle_id": None, "license_plate_snapshot": None,
+            "uniserver_code": None, "identity": None, "bindings": [],
+            "started_at": started_at, "started_at_utc": started_at,
+            "started_monotonic_ns": time.monotonic_ns(),
             "software_git_commit": None, "camera_configuration": camera_config or {},
             "lidar_configuration": {"source": "per-profile LMDscandata.DIST1"},
             "record_counts": {"lidar": 0, "camera": 0, "events": 0, "markers": 0},
@@ -89,6 +113,7 @@ class CameraLidarDiagnosticRecorder:
                 "extended_session": self.extended_session,
                 "production_finalized_at": None,
                 "finish_reason": None,
+                "rollover_from": rollover_from,
             },
             "dropped_record_count": 0, "errors": [],
             "limits": {
@@ -98,11 +123,13 @@ class CameraLidarDiagnosticRecorder:
                 "camera_max_fps": self.camera_max_fps,
             },
         }
+        self._accepting = True
+        self._rollover_from = rollover_from
         self._thread = threading.Thread(target=self._writer_loop, name="diagnostic-writer", daemon=True)
         self._thread.start()
 
     def _enqueue(self, kind: str, payload: dict) -> None:
-        if not self.active:
+        if not self.active or not self._accepting:
             return
         elapsed = (time.monotonic_ns() - self._manifest["started_monotonic_ns"]) / 1e9
         if elapsed > self.max_duration_sec or self._bytes_written >= self.max_bytes:
@@ -118,7 +145,7 @@ class CameraLidarDiagnosticRecorder:
             logger.warning("Diagnostic writer queue full; %s record dropped", kind)
 
     def record_camera(self, sample: dict) -> None:
-        if not self.active:
+        if not self.active or not self._accepting:
             return
         sequence = int(sample["sequence_number"])
         with self._lock:
@@ -141,7 +168,7 @@ class CameraLidarDiagnosticRecorder:
         self._enqueue("camera", payload)
 
     def record_lidar(self, sample: dict) -> None:
-        if self.active and self._manifest["lidar_configuration"].get("beam_count") is None:
+        if self.active and self._accepting and self._manifest["lidar_configuration"].get("beam_count") is None:
             self._manifest["lidar_configuration"].update({
                 key: sample.get(key) for key in (
                     "native_scan_frequency_hz", "measurement_frequency_hz", "start_angle_deg",
@@ -159,10 +186,59 @@ class CameraLidarDiagnosticRecorder:
             "payload": values,
         })
 
-    def bind_trip(self, trip_id: int) -> None:
-        if self.active:
-            self._manifest["trip_id"] = trip_id
-            self.record_event("TRIP_BOUND", trip_id=trip_id)
+    def bind_trip(
+        self,
+        trip_id: int,
+        *,
+        vehicle_id: int | None = None,
+        license_plate_snapshot: str | None = None,
+        uniserver_code: str | None = None,
+        pass_token: str | None = None,
+    ) -> bool:
+        if not self.active:
+            return False
+        existing = self._manifest.get("identity")
+        if existing is not None:
+            same_binding = (
+                existing.get("trip_id") == trip_id
+                and existing.get("pass_token") == pass_token
+            )
+            if not same_binding:
+                logger.error(
+                    "Diagnostic identity rebind rejected: session=%s existing_trip_id=%s requested_trip_id=%s",
+                    self._manifest.get("session_key"), existing.get("trip_id"), trip_id,
+                )
+            return same_binding
+
+        bound_at_utc = datetime.now(timezone.utc).isoformat()
+        bound_at_monotonic_ns = time.monotonic_ns()
+        binding = {
+            "session_key": self._manifest["session_key"],
+            "trip_id": trip_id,
+            "vehicle_id": vehicle_id,
+            "license_plate_snapshot": license_plate_snapshot,
+            "uniserver_code": uniserver_code,
+            "bound_at_utc": bound_at_utc,
+            "bound_at_monotonic_ns": bound_at_monotonic_ns,
+            "pass_token": pass_token,
+        }
+        self._manifest.update({
+            "trip_id": trip_id,
+            "vehicle_id": vehicle_id,
+            "license_plate_snapshot": license_plate_snapshot,
+            "uniserver_code": uniserver_code,
+            "identity": dict(binding),
+        })
+        self._manifest["bindings"].append(dict(binding))
+        self.record_event("TRIP_BOUND", **binding)
+        if self._rollover_from is not None:
+            self.record_event(
+                "DIAGNOSTIC_SESSION_ROLLOVER",
+                **self._rollover_from,
+                new_trip_id=trip_id,
+            )
+            self._rollover_from = None
+        return True
 
     def marker(self, label: str) -> bool:
         if label not in DIAGNOSTIC_MARKER_LABELS or not self.active:
@@ -271,23 +347,32 @@ class CameraLidarDiagnosticRecorder:
             temporary.write_text(json.dumps(self._manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             temporary.replace(target)
 
+    def _stop_locked(self, *, ended_at: str | None = None, reason: str = "SHUTDOWN") -> None:
+        if not self.active:
+            return
+        self._accepting = False
+        if self._finish_timer:
+            self._finish_timer.cancel()
+            self._finish_timer = None
+        self._queue.put(None)
+        if self._thread:
+            self._thread.join()
+        finalized_at = ended_at or datetime.now(timezone.utc).isoformat()
+        self._manifest["ended_at"] = finalized_at
+        self._manifest["finalized_at_utc"] = finalized_at
+        self._manifest["finalized_monotonic_ns"] = time.monotonic_ns()
+        self._manifest["finalize_reason"] = reason
+        self._manifest["diagnostic_lifecycle"]["finish_reason"] = reason
+        if self._manifest["status"] == "RECORDING":
+            self._manifest["status"] = "COMPLETED"
+        self._manifest["bytes_written"] = self._bytes_written
+        self._write_manifest()
+        self._session_dir = None
+        self._thread = None
+
     def stop(self, *, ended_at: str | None = None, reason: str = "SHUTDOWN") -> None:
         with self._stop_lock:
-            if not self.active:
-                return
-            if self._finish_timer:
-                self._finish_timer.cancel()
-                self._finish_timer = None
-            self._queue.put(None)
-            if self._thread:
-                self._thread.join(timeout=10)
-            self._manifest["ended_at"] = ended_at or datetime.now(timezone.utc).isoformat()
-            self._manifest["diagnostic_lifecycle"]["finish_reason"] = reason
-            if self._manifest["status"] == "RECORDING": self._manifest["status"] = "COMPLETED"
-            self._manifest["bytes_written"] = self._bytes_written
-            self._write_manifest()
-            self._session_dir = None
-            self._thread = None
+            self._stop_locked(ended_at=ended_at, reason=reason)
 
     def stop_in_background(self, *, ended_at: str | None = None, reason: str = "BACKGROUND_STOP") -> None:
         """Flush without making the production coordinator wait under its lock."""

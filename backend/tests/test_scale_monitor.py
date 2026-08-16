@@ -78,8 +78,13 @@ def test_new_entry_does_not_reuse_old_active_trip(monkeypatch):
             assert pass_token == "new-pass"
             return None
 
-        async def bind_trip(self, trip_id, pass_token):
+        async def bind_trip(self, trip_id, pass_token, **identity):
             assert (trip_id, pass_token) == (8, "new-pass")
+            assert identity == {
+                "vehicle_id": 1,
+                "license_plate_snapshot": "A001AA",
+                "uniserver_code": None,
+            }
             return True
 
     monkeypatch.setattr(scale_monitor_module, "SessionLocal", FakeDb)

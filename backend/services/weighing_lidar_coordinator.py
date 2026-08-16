@@ -483,7 +483,15 @@ class WeighingLidarCoordinator:
                 return session.trip_id
         return None
 
-    async def bind_trip(self, trip_id: int, pass_token: Optional[str] = None) -> bool:
+    async def bind_trip(
+        self,
+        trip_id: int,
+        pass_token: Optional[str] = None,
+        *,
+        vehicle_id: Optional[int] = None,
+        license_plate_snapshot: Optional[str] = None,
+        uniserver_code: Optional[str] = None,
+    ) -> bool:
         async with self._lock:
             if not pass_token:
                 logger.warning("Lidar trip bind rejected: trip_id=%s reason=missing_pass_token", trip_id)
@@ -522,7 +530,13 @@ class WeighingLidarCoordinator:
                 )
                 return False
             session.trip_id = trip_id
-            diagnostic_recorder.bind_trip(trip_id)
+            diagnostic_recorder.bind_trip(
+                trip_id,
+                vehicle_id=vehicle_id,
+                license_plate_snapshot=license_plate_snapshot,
+                uniserver_code=uniserver_code,
+                pass_token=pass_token,
+            )
             await self._update_repository(session)
             logger.info("Lidar session bound: session=%s trip_id=%s", session.session_key, trip_id)
             return True

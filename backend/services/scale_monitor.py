@@ -121,7 +121,11 @@ class ScaleMonitor:
                 if existing_by_code is not None:
                     if pass_token:
                         await weighing_lidar_coordinator.bind_trip(
-                            existing_by_code.id, pass_token
+                            existing_by_code.id,
+                            pass_token,
+                            vehicle_id=existing_by_code.vehicle_id,
+                            license_plate_snapshot=plate_number,
+                            uniserver_code=existing_by_code.uniserver_code,
                         )
                     return
             trip = models.Trip(
@@ -141,7 +145,13 @@ class ScaleMonitor:
             
             db.commit()
             if pass_token:
-                await weighing_lidar_coordinator.bind_trip(trip.id, pass_token)
+                await weighing_lidar_coordinator.bind_trip(
+                    trip.id,
+                    pass_token,
+                    vehicle_id=vehicle.id,
+                    license_plate_snapshot=plate_number,
+                    uniserver_code=trip.uniserver_code,
+                )
             logger.info(f"🚛 ✅ СОЗДАН РЕЙС {trip.id} для {plate_number}, вес {weight} кг")
             
         except Exception as e:
