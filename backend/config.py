@@ -42,6 +42,22 @@ class Settings:
     ).lower() in {"1", "true", "yes", "on"}
     CAMERA_RTSP_RECONNECT_SECONDS: float = float(os.getenv("CAMERA_RTSP_RECONNECT_SECONDS", "1"))
 
+    # Optional side camera used only for diagnostics/experiments. Credentials
+    # stay in the environment and are never exposed by status/metadata APIs.
+    CAMERA_SIDE_ENABLED: bool = os.getenv("CAMERA_SIDE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    CAMERA_SIDE_RTSP_URL: str = os.getenv("CAMERA_SIDE_RTSP_URL", "")
+    CAMERA_SIDE_RTSP_TRANSPORT: str = os.getenv("CAMERA_SIDE_RTSP_TRANSPORT", "tcp").strip().lower()
+    CAMERA_MAX_FRAME_GAP_MS: float = float(os.getenv("CAMERA_MAX_FRAME_GAP_MS", "500"))
+    CAMERA_STALE_THRESHOLD_MS: float = float(os.getenv("CAMERA_STALE_THRESHOLD_MS", "1000"))
+    CAMERA_SIDE_RECONNECT_SECONDS: float = float(os.getenv("CAMERA_SIDE_RECONNECT_SECONDS", "1"))
+
+    SIDE_EXPERIMENT_DATA_DIR: str = os.getenv(
+        "SIDE_EXPERIMENT_DATA_DIR", os.path.join(os.path.dirname(__file__), "data", "experiments")
+    )
+    SIDE_EXPERIMENT_QUEUE_SIZE: int = int(os.getenv("SIDE_EXPERIMENT_QUEUE_SIZE", "500"))
+    SIDE_EXPERIMENT_MAX_FPS: float = float(os.getenv("SIDE_EXPERIMENT_MAX_FPS", "15"))
+    SIDE_EXPERIMENT_MAX_BYTES: int = int(os.getenv("SIDE_EXPERIMENT_MAX_BYTES", str(4 * 1024 * 1024 * 1024)))
+
     # Opt-in Camera + LiDAR research recording. Disabled by default.
     CAMERA_LIDAR_DIAGNOSTIC_RECORDING: bool = os.getenv(
         "CAMERA_LIDAR_DIAGNOSTIC_RECORDING", "false"

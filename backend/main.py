@@ -16,16 +16,20 @@ from services.camera_client import CameraClient
 from services.scale_monitor import scale_monitor
 from crud import TripCRUD, VehicleCRUD
 from config import settings
-from routers import weighing, lidar, scan_3d, camera, control, coal_acceptance
+from routers import weighing, lidar, scan_3d, camera, cameras, experiments, control, coal_acceptance
 from services.lidar_profile_buffer import lidar_profile_buffer
 from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
 from services.development_motion_shadow import development_motion_shadow
+from services.side_camera_service import side_camera_service
+from services.side_camera_experiment_recorder import experiment_recorder
 
 # The recorder subscribes to the existing singleton producer; it never opens a camera.
 diagnostic_recorder.attach_camera(camera.camera_client)
 development_motion_shadow.attach_camera(camera.camera_client)
 development_motion_shadow.attach_lidar(lidar_profile_buffer)
+experiment_recorder.attach_side_camera(side_camera_service)
+experiment_recorder.attach_lidar(lidar_profile_buffer)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -105,6 +109,8 @@ app.include_router(weighing.router)
 app.include_router(lidar.router)
 app.include_router(scan_3d.router)
 app.include_router(camera.router)
+app.include_router(cameras.router)
+app.include_router(experiments.router)
 app.include_router(control.router)
 app.include_router(coal_acceptance.router)
 
