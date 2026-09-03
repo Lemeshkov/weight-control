@@ -25,13 +25,14 @@ class CameraLidarDiagnosticRecorder:
     """Non-blocking, opt-in writer for one physical pass."""
 
     def __init__(self, *, enabled=None, base_dir=None, queue_size=None, max_duration_sec=None, max_bytes=None,
-                 camera_max_fps=None, extended_session=None, post_finalize_grace_sec=None):
+                 camera_max_fps=None, side_camera_max_fps=None, extended_session=None, post_finalize_grace_sec=None):
         self.enabled = settings.CAMERA_LIDAR_DIAGNOSTIC_RECORDING if enabled is None else enabled
         self.base_dir = Path(base_dir or settings.DIAGNOSTIC_DATA_DIR)
         self.queue_size = queue_size or settings.DIAGNOSTIC_QUEUE_SIZE
         self.max_duration_sec = max_duration_sec or settings.DIAGNOSTIC_MAX_DURATION_SEC
         self.max_bytes = max_bytes or settings.DIAGNOSTIC_MAX_BYTES
         self.camera_max_fps = settings.DIAGNOSTIC_CAMERA_MAX_FPS if camera_max_fps is None else camera_max_fps
+        self.side_camera_max_fps = settings.DIAGNOSTIC_SIDE_CAMERA_MAX_FPS if side_camera_max_fps is None else side_camera_max_fps
         self.extended_session = (
             settings.CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION
             if extended_session is None else extended_session
@@ -49,6 +50,11 @@ class CameraLidarDiagnosticRecorder:
         self._bytes_written = 0
         self._camera_sequences_seen: set[int] = set()
         self._last_camera_recorded_monotonic_ns: Optional[int] = None
+        self._side_camera_sequences_seen: set[int] = set()
+        self._last_side_camera_recorded_monotonic_ns: Optional[int] = None
+        self._side_camera_times: list[int] = []
+        self._side_camera_bytes = 0
+        self._side_camera_service = None
         self._finish_timer: Optional[threading.Timer] = None
         self._production_finalized_monotonic_ns: Optional[int] = None
         self._accepting = False
@@ -60,6 +66,11 @@ class CameraLidarDiagnosticRecorder:
 
     def attach_camera(self, camera_client) -> None:
         camera_client.add_frame_listener(self.record_camera)
+
+    def attach_side_camera(self, side_camera_service) -> None:
+        """Subscribe only to the optional producer; never starts or requires it."""
+        self._side_camera_service = side_camera_service
+        side_camera_service.add_frame_listener(self.record_side_camera)
 
     @staticmethod
     def _git_commit() -> str | None:
@@ -96,6 +107,10 @@ class CameraLidarDiagnosticRecorder:
         self._bytes_written = 0
         self._camera_sequences_seen = set()
         self._last_camera_recorded_monotonic_ns = None
+        self._side_camera_sequences_seen = set()
+        self._last_side_camera_recorded_monotonic_ns = None
+        self._side_camera_times = []
+        self._side_camera_bytes = 0
         self._production_finalized_monotonic_ns = None
         self._manifest = {
             "format_version": 2, "identity_binding_version": 1,
@@ -106,9 +121,20 @@ class CameraLidarDiagnosticRecorder:
             "started_monotonic_ns": time.monotonic_ns(),
             "software_git_commit": None, "camera_configuration": camera_config or {},
             "lidar_configuration": {"source": "per-profile LMDscandata.DIST1"},
-            "record_counts": {"lidar": 0, "camera": 0, "events": 0, "markers": 0},
+            "record_counts": {"lidar": 0, "camera": 0, "camera_side": 0, "events": 0, "markers": 0},
             "camera_duplicate_sequence_count": 0,
             "camera_sampled_out_count": 0,
+            "side_camera_configuration": self._safe_side_camera_configuration(),
+            "side_camera_statistics": {
+                "frames_received": 0, "frames_saved": 0, "first_monotonic_ns": None,
+                "last_monotonic_ns": None, "median_frame_interval_ms": None,
+                "p95_frame_interval_ms": None, "max_frame_interval_ms": None,
+                "capture_gaps_count": 0,
+                "bytes_saved": 0, "average_jpeg_bytes": None,
+                "estimated_disk_mb_per_minute": None, "estimated_disk_gb_per_hour": None,
+            },
+            "side_camera_duplicate_sequence_count": 0,
+            "side_camera_sampled_out_count": 0,
             "diagnostic_lifecycle": {
                 "extended_session": self.extended_session,
                 "production_finalized_at": None,
@@ -121,6 +147,7 @@ class CameraLidarDiagnosticRecorder:
                 "max_bytes": self.max_bytes,
                 "queue_size": self.queue_size,
                 "camera_max_fps": self.camera_max_fps,
+                "side_camera_max_fps": self.side_camera_max_fps,
             },
         }
         self._accepting = True
@@ -166,6 +193,43 @@ class CameraLidarDiagnosticRecorder:
         payload = dict(sample)
         payload["recorder_observed_monotonic_ns"] = time.monotonic_ns()
         self._enqueue("camera", payload)
+
+    def _safe_side_camera_configuration(self) -> dict:
+        status = self._side_camera_service.status() if self._side_camera_service else {}
+        return {
+            "camera_source": "SIDE_CAMERA", "enabled": bool(status.get("enabled")),
+            "configured_host": status.get("configured_host"), "stream_type": status.get("stream_type", "UNIDENTIFIED"),
+            "resolution": status.get("resolution"), "reported_fps": status.get("measured_fps"),
+            "target_recording_fps": self.side_camera_max_fps,
+        }
+
+    def record_side_camera(self, sample: dict) -> None:
+        """Best-effort side frame recording, isolated from production capture."""
+        if not self.active or not self._accepting:
+            return
+        try:
+            sequence = int(sample.get("frame_counter", sample["sequence_number"]))
+            captured_ns = int(sample.get("receive_monotonic_ns", sample["captured_monotonic_ns"]))
+            with self._lock:
+                stats = self._manifest["side_camera_statistics"]
+                stats["frames_received"] += 1
+                if sequence in self._side_camera_sequences_seen:
+                    self._manifest["side_camera_duplicate_sequence_count"] += 1
+                    return
+                self._side_camera_sequences_seen.add(sequence)
+                minimum_ns = int(1_000_000_000 / self.side_camera_max_fps) if self.side_camera_max_fps > 0 else 0
+                if minimum_ns and self._last_side_camera_recorded_monotonic_ns is not None and captured_ns - self._last_side_camera_recorded_monotonic_ns < minimum_ns:
+                    self._manifest["side_camera_sampled_out_count"] += 1
+                    return
+                self._last_side_camera_recorded_monotonic_ns = captured_ns
+                self._side_camera_times.append(captured_ns)
+            payload = dict(sample)
+            payload["captured_monotonic_ns"] = captured_ns
+            payload["camera_source"] = "SIDE_CAMERA"
+            payload["recorder_observed_monotonic_ns"] = time.monotonic_ns()
+            self._enqueue("camera_side", payload)
+        except Exception as exc:
+            logger.warning("SIDE_CAMERA diagnostic frame rejected: %s", type(exc).__name__)
 
     def record_lidar(self, sample: dict) -> None:
         if self.active and self._accepting and self._manifest["lidar_configuration"].get("beam_count") is None:
@@ -306,9 +370,11 @@ class CameraLidarDiagnosticRecorder:
     def _writer_loop(self) -> None:
         (self._session_dir / "lidar").mkdir(parents=True, exist_ok=True)
         (self._session_dir / "camera").mkdir(parents=True, exist_ok=True)
+        (self._session_dir / "camera_side").mkdir(parents=True, exist_ok=True)
         self._manifest["software_git_commit"] = self._git_commit()
         self._write_manifest()
         camera_csv = self._session_dir / "camera" / "frames.csv"
+        side_camera_csv = self._session_dir / "camera_side" / "frames.csv"
         while True:
             item = self._queue.get()
             if item is None:
@@ -329,6 +395,22 @@ class CameraLidarDiagnosticRecorder:
                         if new_file: writer.writeheader()
                         writer.writerow({**payload, "file": name})
                     self._bytes_written += len(jpeg)
+                elif kind == "camera_side":
+                    jpeg = payload.pop("jpeg")
+                    payload["writer_started_monotonic_ns"] = time.monotonic_ns()
+                    payload["jpeg_sha256"] = hashlib.sha256(jpeg).hexdigest()
+                    sequence = int(payload.get("frame_counter", payload["sequence_number"]))
+                    name = f"frame_{sequence:08d}.jpg"
+                    (self._session_dir / "camera_side" / name).write_bytes(jpeg)
+                    payload["writer_persisted_monotonic_ns"] = time.monotonic_ns()
+                    new_file = not side_camera_csv.exists()
+                    with side_camera_csv.open("a", encoding="utf-8", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=[*payload.keys(), "file"])
+                        if new_file: writer.writeheader()
+                        writer.writerow({**payload, "file": name})
+                    self._bytes_written += len(jpeg)
+                    self._side_camera_bytes += len(jpeg)
+                    self._manifest["side_camera_statistics"]["frames_saved"] += 1
                 elif kind == "lidar": self._append_jsonl("lidar/raw_scans.jsonl", payload)
                 elif kind == "events": self._append_jsonl("events.jsonl", payload)
                 elif kind == "markers": self._append_jsonl("markers.jsonl", payload)
@@ -366,9 +448,30 @@ class CameraLidarDiagnosticRecorder:
         if self._manifest["status"] == "RECORDING":
             self._manifest["status"] = "COMPLETED"
         self._manifest["bytes_written"] = self._bytes_written
+        self._finalize_side_camera_statistics()
         self._write_manifest()
         self._session_dir = None
         self._thread = None
+
+    def _finalize_side_camera_statistics(self) -> None:
+        stats = self._manifest.get("side_camera_statistics")
+        if stats is None or not self._side_camera_times:
+            return
+        stats["first_monotonic_ns"] = self._side_camera_times[0]
+        stats["last_monotonic_ns"] = self._side_camera_times[-1]
+        stats["bytes_saved"] = self._side_camera_bytes
+        stats["average_jpeg_bytes"] = self._side_camera_bytes / len(self._side_camera_times)
+        if len(self._side_camera_times) > 1:
+            intervals = [(b-a)/1e6 for a,b in zip(self._side_camera_times, self._side_camera_times[1:])]
+            ordered = sorted(intervals)
+            stats["median_frame_interval_ms"] = ordered[len(ordered)//2]
+            stats["p95_frame_interval_ms"] = ordered[min(len(ordered)-1, int(.95*(len(ordered)-1)))]
+            stats["max_frame_interval_ms"] = max(intervals)
+            stats["capture_gaps_count"] = sum(x > settings.CAMERA_MAX_FRAME_GAP_MS for x in intervals)
+            fps = 1000 / stats["median_frame_interval_ms"] if stats["median_frame_interval_ms"] else 0
+            mb_min = stats["average_jpeg_bytes"] * fps * 60 / 1_000_000
+            stats["estimated_disk_mb_per_minute"] = mb_min
+            stats["estimated_disk_gb_per_hour"] = mb_min * 60 / 1000
 
     def stop(self, *, ended_at: str | None = None, reason: str = "SHUTDOWN") -> None:
         with self._stop_lock:

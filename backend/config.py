@@ -42,10 +42,22 @@ class Settings:
     ).lower() in {"1", "true", "yes", "on"}
     CAMERA_RTSP_RECONNECT_SECONDS: float = float(os.getenv("CAMERA_RTSP_RECONNECT_SECONDS", "1"))
 
-    # Optional side camera used only for diagnostics/experiments. Credentials
-    # stay in the environment and are never exposed by status/metadata APIs.
-    CAMERA_SIDE_ENABLED: bool = os.getenv("CAMERA_SIDE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
-    CAMERA_SIDE_RTSP_URL: str = os.getenv("CAMERA_SIDE_RTSP_URL", "")
+    # Permanent optional side-camera capture sensor. It is raw-data-only until
+    # metric odometry is independently authorized. Credentials stay in env.
+    CAMERA_SIDE_ENABLED: bool = os.getenv("SIDE_CAMERA_ENABLED", os.getenv("CAMERA_SIDE_ENABLED", "false")).lower() in {"1", "true", "yes", "on"}
+    CAMERA_SIDE_HOST: str = os.getenv("SIDE_CAMERA_HOST", os.getenv("CAMERA_SIDE_HOST", "10.79.24.188"))
+    CAMERA_SIDE_PORT: int = int(os.getenv("CAMERA_SIDE_PORT", "554"))
+    CAMERA_SIDE_USERNAME: str = os.getenv("SIDE_CAMERA_USERNAME", os.getenv("CAMERA_SIDE_USERNAME", ""))
+    CAMERA_SIDE_PASSWORD: str = os.getenv("SIDE_CAMERA_PASSWORD", os.getenv("CAMERA_SIDE_PASSWORD", ""))
+    # No default path: the side-camera stream endpoint is not yet identified.
+    CAMERA_SIDE_RTSP_PATH: str = os.getenv("CAMERA_SIDE_RTSP_PATH", "")
+    # Backward-compatible full URL override; prefer separate credential settings above.
+    CAMERA_SIDE_RTSP_URL: str = os.getenv("SIDE_CAMERA_STREAM_URL", os.getenv("CAMERA_SIDE_RTSP_URL", ""))
+    SIDE_CAMERA_TARGET_FPS: float = float(os.getenv("SIDE_CAMERA_TARGET_FPS", "15"))
+    SIDE_CAMERA_PRE_TRIGGER_SECONDS: float = float(os.getenv("SIDE_CAMERA_PRE_TRIGGER_SECONDS", str(LIDAR_BUFFER_SECONDS)))
+    SIDE_CAMERA_SESSION_DATA_DIR: str = os.getenv("SIDE_CAMERA_SESSION_DATA_DIR", LIDAR_PASS_DATA_PATH)
+    SIDE_CAMERA_QUEUE_SIZE: int = int(os.getenv("SIDE_CAMERA_QUEUE_SIZE", "500"))
+    SIDE_CAMERA_SHUTDOWN_TIMEOUT_SECONDS: float = float(os.getenv("SIDE_CAMERA_SHUTDOWN_TIMEOUT_SECONDS", "3"))
     CAMERA_SIDE_RTSP_TRANSPORT: str = os.getenv("CAMERA_SIDE_RTSP_TRANSPORT", "tcp").strip().lower()
     CAMERA_MAX_FRAME_GAP_MS: float = float(os.getenv("CAMERA_MAX_FRAME_GAP_MS", "500"))
     CAMERA_STALE_THRESHOLD_MS: float = float(os.getenv("CAMERA_STALE_THRESHOLD_MS", "1000"))
@@ -69,6 +81,7 @@ class Settings:
     DIAGNOSTIC_QUEUE_SIZE: int = int(os.getenv("DIAGNOSTIC_QUEUE_SIZE", "500"))
     DIAGNOSTIC_MAX_BYTES: int = int(os.getenv("DIAGNOSTIC_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
     DIAGNOSTIC_CAMERA_MAX_FPS: float = float(os.getenv("DIAGNOSTIC_CAMERA_MAX_FPS", "5"))
+    DIAGNOSTIC_SIDE_CAMERA_MAX_FPS: float = float(os.getenv("DIAGNOSTIC_SIDE_CAMERA_MAX_FPS", "15"))
     CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION: bool = os.getenv(
         "CAMERA_LIDAR_DIAGNOSTIC_EXTENDED_SESSION", "false"
     ).lower() in {"1", "true", "yes", "on"}

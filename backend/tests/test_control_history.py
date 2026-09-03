@@ -193,6 +193,28 @@ def test_control_history_query_count_is_constant():
     assert "distances_mm" not in str(response)
 
 
+def test_control_history_server_side_pages_total_and_stable_order():
+    _engine, session = make_session()
+    for trip_id in range(1, 26):
+        session.add(models.Trip(id=trip_id, vehicle=models.Vehicle(plate_number=f"P{trip_id}"), entry_time=datetime(2026, 1, 1), status=models.TripStatus.ENTRY))
+    session.commit()
+    first = asyncio.run(get_control_history(limit=50, page=1, page_size=10, db=session))
+    middle = asyncio.run(get_control_history(limit=50, page=2, page_size=10, db=session))
+    last = asyncio.run(get_control_history(limit=50, page=3, page_size=10, db=session))
+    beyond = asyncio.run(get_control_history(limit=50, page=4, page_size=10, db=session))
+    assert (first['total'],first['total_pages'])==(25,3)
+    assert [x['trip_id'] for x in first['items']]==list(range(25,15,-1))
+    assert [x['trip_id'] for x in middle['items']]==list(range(15,5,-1))
+    assert [x['trip_id'] for x in last['items']]==list(range(5,0,-1))
+    assert beyond['items']==[] and beyond['total']==25
+
+
+def test_control_history_empty_paginated_journal():
+    _engine, session = make_session()
+    response = asyncio.run(get_control_history(limit=50, page=1, page_size=10, db=session))
+    assert response == {'items': [], 'total': 0, 'page': 1, 'page_size': 10, 'total_pages': 0}
+
+
 @pytest.mark.parametrize("acceptance_status", [None, models.CoalAcceptanceStatus.DRAFT, models.CoalAcceptanceStatus.COMPLETED])
 def test_control_history_http_endpoint_uses_production_get_db_session_factory(
     tmp_path, monkeypatch, acceptance_status

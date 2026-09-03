@@ -13,6 +13,6 @@ export function ControlDashboard() {
     <EquipmentStatusBar control={control} camera={camera} controlStatus={controlStatus} />
     <SystemWarningBanner control={control} backendError={controlError} />
     <ActivePassCard control={control} camera={camera} />
-    <RecentTripsTable items={history.items} error={history.error} refresh={() => void history.refresh()} />
+    <RecentTripsTable items={history.items} error={history.error} refresh={() => void history.refresh()} page={history.page} totalPages={history.totalPages} total={history.total} onPageChange={history.setPage} />
   </main>;
 }

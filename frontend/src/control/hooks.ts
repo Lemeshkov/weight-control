@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mockCamera, mockCurrent, mockHistory } from "./mock";
-import type { CameraStatus, ControlCurrent, ControlEndpointStatus, ControlHistoryItem } from "./types";
+import type { CameraStatus, ControlCurrent, ControlEndpointStatus, ControlHistoryItem, ControlHistoryPage } from "./types";
 
 const useMock = import.meta.env.VITE_USE_CONTROL_MOCK === "true";
 
@@ -85,22 +85,26 @@ export function useCameraStatus() {
 }
 
 export function useControlHistory(refreshKey: string) {
+  const pageSize = 10;
+  const [page, setPage] = useState(1);
   const [items, setItems] = useState<ControlHistoryItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async (signal?: AbortSignal) => {
     const controller = signal ? null : new AbortController();
     try {
-      const result = useMock ? { items: mockHistory } : await getJson<{ items: ControlHistoryItem[] }>("/api/control/history", signal || controller!.signal);
-      setItems(result.items); setError(null);
+      const result = useMock ? { items: mockHistory.slice((page - 1) * pageSize, page * pageSize), total: mockHistory.length, page, page_size: pageSize, total_pages: Math.ceil(mockHistory.length / pageSize) } : await getJson<ControlHistoryPage>(`/api/control/history?page=${page}&page_size=${pageSize}`, signal || controller!.signal);
+      setItems(result.items); setTotal(result.total); setTotalPages(result.total_pages); setError(null);
     } catch (reason) {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) setError("История временно недоступна");
     }
-  }, []);
+  }, [page]);
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
     const timer = window.setInterval(() => { if (!document.hidden) void load(); }, 20000);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [load, refreshKey]);
-  return { items, error, refresh: load };
+  return { items, error, refresh: load, page, pageSize, total, totalPages, setPage };
 }

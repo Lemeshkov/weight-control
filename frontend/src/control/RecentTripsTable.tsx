@@ -12,10 +12,11 @@ function Details({ item }: { item: ControlHistoryItem }) {
   </div>;
 }
 
-export function RecentTripsTable({ items, error, refresh }: { items: ControlHistoryItem[]; error: string | null; refresh: () => void }) {
+export function RecentTripsTable({ items, error, refresh, page, totalPages, total, onPageChange }: { items: ControlHistoryItem[]; error: string | null; refresh: () => void; page: number; totalPages: number; total: number; onPageChange: (page: number) => void }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   return <section className="history-card"><div className="section-heading"><div><span className="eyebrow">Журнал</span><h2>Последние рейсы</h2></div><button onClick={refresh}>Обновить</button></div>
     {error && <div className="notice notice--warn">{error}. Уже загруженные строки сохранены.</div>}
     {!items.length ? <div className="empty-state">Сохранённых рейсов пока нет</div> : <div className="table-wrap"><table><thead><tr><th>Время</th><th>Автомобиль</th><th>Госномер</th><th>Вес</th><th>Профили</th><th>Лидар</th><th>Объём</th><th>Действия</th></tr></thead><tbody>{items.map(item => <Fragment key={item.trip_id}><tr><td>{dateTime(item.entry_time)}</td><td>{item.vehicle.brand || "—"}</td><td><b>{item.vehicle.license_plate}</b></td><td>{kg(item.weight.value_kg)}</td><td>{item.lidar?.profiles_count ?? "—"}</td><td>{item.lidar ? lidarLabels[item.lidar.status] || item.lidar.status : "Нет сессии"}</td><td>{item.lidar ? volumeLabels[item.lidar.volume_status] || item.lidar.volume_status : "—"}</td><td><button aria-expanded={expanded === item.trip_id} onClick={() => setExpanded(expanded === item.trip_id ? null : item.trip_id)}>Подробнее</button></td></tr>{expanded === item.trip_id && <tr><td colSpan={8}><Details item={item} /></td></tr>}</Fragment>)}</tbody></table></div>}
+    {totalPages > 0 && <div className="history-pagination"><button disabled={page <= 1} onClick={() => onPageChange(page - 1)}>Назад</button><span>Страница {page} из {totalPages} · всего {total}</span><button disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>Вперёд</button></div>}
   </section>;
 }

@@ -63,6 +63,20 @@ def test_load_scale_opens_one_session_with_pretrigger_profiles(tmp_path):
     assert coordinator.active_session.status == "RECORDING"
 
 
+def test_side_camera_failure_does_not_stop_lidar_session(tmp_path, monkeypatch):
+    import services.weighing_lidar_coordinator as module
+    class BrokenSideRecorder:
+        def start(self, _session_id): raise RuntimeError("side unavailable")
+        def stop_in_background(self): raise RuntimeError("side unavailable")
+    monkeypatch.setattr(module, "side_camera_session_recorder", BrokenSideRecorder())
+    coordinator, buffer, _ = make_coordinator(tmp_path)
+    buffer.add_profile([100, 200], captured_at=datetime.now(timezone.utc))
+    asyncio.run(coordinator.on_scale_snapshot(snapshot("LoadScale", 1300, False)))
+    assert coordinator.active_session is not None
+    assert coordinator.active_session.status == "RECORDING"
+    assert len(coordinator.active_session.profiles) == 1
+
+
 def test_stable_weight_requires_confirmations_and_closes_after_delay(tmp_path):
     coordinator, buffer, _ = make_coordinator(tmp_path, stable_samples=3, post_delay=0.01)
     buffer.add_profile([100, 200], captured_at=datetime.now(timezone.utc))

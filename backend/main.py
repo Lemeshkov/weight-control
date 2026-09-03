@@ -23,13 +23,16 @@ from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
 from services.development_motion_shadow import development_motion_shadow
 from services.side_camera_service import side_camera_service
 from services.side_camera_experiment_recorder import experiment_recorder
+from services.side_camera_session_recorder import side_camera_session_recorder
 
 # The recorder subscribes to the existing singleton producer; it never opens a camera.
 diagnostic_recorder.attach_camera(camera.camera_client)
+diagnostic_recorder.attach_side_camera(side_camera_service)
 development_motion_shadow.attach_camera(camera.camera_client)
 development_motion_shadow.attach_lidar(lidar_profile_buffer)
 experiment_recorder.attach_side_camera(side_camera_service)
 experiment_recorder.attach_lidar(lidar_profile_buffer)
+side_camera_session_recorder.attach(side_camera_service)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)

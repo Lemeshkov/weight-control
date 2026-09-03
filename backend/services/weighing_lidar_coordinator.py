@@ -11,6 +11,7 @@ from services.lidar_pass_storage import AtomicLidarPassStorage, lidar_pass_stora
 from services.lidar_profile_buffer import LidarProfile, LidarProfileBuffer, lidar_profile_buffer
 from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
 from services.development_motion_shadow import development_motion_shadow
+from services.side_camera_session_recorder import side_camera_session_recorder
 from services.lidar_session_repository import (
     InMemoryLidarSessionRepository,
     LidarSessionRepository,
@@ -283,6 +284,10 @@ class WeighingLidarCoordinator:
             "SESSION_OPENED", scale_state=snapshot["state_name"],
             weight_kg=snapshot["massa"], stable=snapshot["stabil"],
         )
+        try:
+            side_camera_session_recorder.start(session.session_key)
+        except Exception as exc:
+            logger.warning("SIDE_CAMERA session start isolated: %s", type(exc).__name__)
         await self._create_repository_record(session)
 
     async def _finish_after_delay(self, session_key: str) -> None:
@@ -340,6 +345,10 @@ class WeighingLidarCoordinator:
         diagnostic_recorder.production_finalized(
             ended_at=session.completed_at.isoformat() if session.completed_at else None,
         )
+        try:
+            side_camera_session_recorder.stop_in_background()
+        except Exception as exc:
+            logger.warning("SIDE_CAMERA session stop isolated: %s", type(exc).__name__)
         self.active_session = None
         self._stable_samples = 0
         self._empty_samples = 0

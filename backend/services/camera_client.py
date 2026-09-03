@@ -33,6 +33,7 @@ class CameraClient:
                     username: str = "",
                     password: str = "",
                     rtsp_path: str = "/Streaming/Channels/101",
+                    rtsp_port: int = 554,
                     capture_mode: str = "snapshot",
                     rtsp_fallback_to_snapshot: bool = True,
                     rtsp_reconnect_seconds: float = 1.0):
@@ -42,6 +43,7 @@ class CameraClient:
         self.username = username
         self.password = password
         self.rtsp_path = rtsp_path
+        self.rtsp_port = int(rtsp_port)
         self.capture_mode = capture_mode.strip().lower()
         if self.capture_mode not in {"snapshot", "rtsp"}:
             raise ValueError("capture_mode must be 'snapshot' or 'rtsp'")
@@ -145,9 +147,9 @@ class CameraClient:
             if self.username and self.password:
                 username = quote(self.username, safe="")
                 password = quote(self.password, safe="")
-                return f"rtsp://{username}:{password}@{self.ip}:554{self.rtsp_path}"
+                return f"rtsp://{username}:{password}@{self.ip}:{self.rtsp_port}{self.rtsp_path}"
             else:
-                return f"rtsp://{self.ip}:554{self.rtsp_path}"
+                return f"rtsp://{self.ip}:{self.rtsp_port}{self.rtsp_path}"
         return "0"
 
     @property

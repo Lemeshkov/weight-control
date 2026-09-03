@@ -91,12 +91,21 @@ describe("operator control components", () => {
     expect(screen.queryByText("Проверка…")).toBeTruthy(); // camera is checked independently
   });
   it("shows saved JSON details, no historical photo, and creates no camera streams", () => {
-    render(<RecentTripsTable items={[historyItem(1), historyItem(2)]} error={null} refresh={() => undefined} />);
+    render(<RecentTripsTable items={[historyItem(1), historyItem(2)]} error={null} refresh={() => undefined} page={1} totalPages={1} total={2} onPageChange={() => undefined} />);
     const buttons = screen.getAllByText("Подробнее");
     fireEvent.click(buttons[0]);
     expect(screen.getByText("JSON: pass.json")).toBeTruthy();
     expect(screen.getByText("Фото проезда не сохранялось")).toBeTruthy();
     fireEvent.click(buttons[1]);
     expect(document.querySelectorAll('img[src="/api/camera/stream"]')).toHaveLength(0);
+  });
+  it("shows compact pagination and changes pages", () => {
+    let selected = 0;
+    render(<RecentTripsTable items={[historyItem(1)]} error={null} refresh={() => undefined} page={2} totalPages={4} total={37} onPageChange={page => { selected = page; }} />);
+    expect(screen.getByText("Страница 2 из 4 · всего 37")).toBeTruthy();
+    fireEvent.click(screen.getByText("Вперёд"));
+    expect(selected).toBe(3);
+    fireEvent.click(screen.getByText("Назад"));
+    expect(selected).toBe(1);
   });
 });

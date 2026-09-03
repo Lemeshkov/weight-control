@@ -65,6 +65,10 @@ class ControlHistoryItem(BaseModel):
 
 class ControlHistoryResponse(BaseModel):
     items: list[ControlHistoryItem]
+    total: Optional[int] = None
+    page: Optional[int] = None
+    page_size: Optional[int] = None
+    total_pages: Optional[int] = None
 
 
 @router.get("/current")
@@ -90,9 +94,16 @@ async def get_current_lidar_session():
 @router.get("/history", response_model=ControlHistoryResponse)
 async def get_control_history(
     limit: int = Query(default=50, ge=1, le=200),
+    page: Optional[int] = Query(default=None, ge=1),
+    page_size: Optional[int] = Query(default=None, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    trips = (
+    page_value = page if isinstance(page, int) else None
+    page_size_value = page_size if isinstance(page_size, int) else None
+    paginated = page_value is not None or page_size_value is not None
+    current_page = page_value or 1
+    current_page_size = page_size_value or min(limit, 200)
+    query = (
         db.query(models.Trip)
         .options(
             joinedload(models.Trip.vehicle),
@@ -100,10 +111,10 @@ async def get_control_history(
             joinedload(models.Trip.exit_measurement),
             joinedload(models.Trip.coal_acceptance),
         )
-        .order_by(models.Trip.entry_time.desc())
-        .limit(limit)
-        .all()
+        .order_by(models.Trip.entry_time.desc(), models.Trip.id.desc())
     )
+    total = query.count() if paginated else None
+    trips = query.offset((current_page - 1) * current_page_size).limit(current_page_size if paginated else limit).all()
     trip_ids = [trip.id for trip in trips]
     sessions_by_trip: dict[int, list[models.LidarPassSession]] = defaultdict(list)
     if trip_ids:
@@ -177,4 +188,10 @@ async def get_control_history(
             if trip.coal_acceptance else "WAITING"
         )
         items.append(item)
-    return {"items": items}
+    return {
+        "items": items,
+        "total": total,
+        "page": current_page if paginated else None,
+        "page_size": current_page_size if paginated else None,
+        "total_pages": ((total + current_page_size - 1) // current_page_size) if paginated else None,
+    }

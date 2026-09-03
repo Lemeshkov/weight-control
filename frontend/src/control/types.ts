@@ -67,3 +67,11 @@ export interface ControlHistoryItem {
   photo_path: string | null;
   acceptance_status?: "WAITING" | "DRAFT" | "COMPLETED";
 }
+
+export interface ControlHistoryPage {
+  items: ControlHistoryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
