@@ -1,6 +1,7 @@
 # backend/config.py
 import os
 from decimal import Decimal
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -54,6 +55,12 @@ class Settings:
     # Backward-compatible full URL override; prefer separate credential settings above.
     CAMERA_SIDE_RTSP_URL: str = os.getenv("SIDE_CAMERA_STREAM_URL", os.getenv("CAMERA_SIDE_RTSP_URL", ""))
     SIDE_CAMERA_TARGET_FPS: float = float(os.getenv("SIDE_CAMERA_TARGET_FPS", "15"))
+    SIDE_CAMERA_FFMPEG_PATH: str = os.getenv(
+        "SIDE_CAMERA_FFMPEG_PATH",
+        str(Path(__file__).resolve().parent.parent / "tools" / "ffmpeg" / "ffmpeg-9.0.1-essentials_build" / "bin" / "ffmpeg.exe"),
+    )
+    SIDE_CAMERA_FRAME_WIDTH: int = int(os.getenv("SIDE_CAMERA_FRAME_WIDTH", "1280"))
+    SIDE_CAMERA_FRAME_HEIGHT: int = int(os.getenv("SIDE_CAMERA_FRAME_HEIGHT", "720"))
     SIDE_CAMERA_PRE_TRIGGER_SECONDS: float = float(os.getenv("SIDE_CAMERA_PRE_TRIGGER_SECONDS", str(LIDAR_BUFFER_SECONDS)))
     SIDE_CAMERA_SESSION_DATA_DIR: str = os.getenv("SIDE_CAMERA_SESSION_DATA_DIR", LIDAR_PASS_DATA_PATH)
     SIDE_CAMERA_QUEUE_SIZE: int = int(os.getenv("SIDE_CAMERA_QUEUE_SIZE", "500"))
