@@ -327,5 +327,6 @@ class CoalAcceptanceAuditLog(Base):
 
 from lab_models import (
     CoalFraction, CoalGrade, LabAuditLog, LabExperiment, LabExperimentStatus,
-    LabMeasurement, LabVolumeUnit, Supplier,
+    LabMeasurement, LabVolumeUnit, Supplier, SupplierVehicle,
+    VehicleSupplierAssignment, SupplierCoalSpec, SupplierCoalFractionSpec,
 )

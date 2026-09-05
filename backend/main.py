@@ -16,7 +16,7 @@ from services.camera_client import CameraClient
 from services.scale_monitor import scale_monitor
 from crud import TripCRUD, VehicleCRUD
 from config import settings
-from routers import weighing, lidar, scan_3d, camera, cameras, experiments, control, coal_acceptance
+from routers import weighing, lidar, scan_3d, camera, cameras, experiments, control, coal_acceptance, supplier_admin
 from services.lidar_profile_buffer import lidar_profile_buffer
 from services.weighing_lidar_coordinator import weighing_lidar_coordinator
 from services.camera_lidar_diagnostic_recorder import diagnostic_recorder
@@ -116,6 +116,7 @@ app.include_router(cameras.router)
 app.include_router(experiments.router)
 app.include_router(control.router)
 app.include_router(coal_acceptance.router)
+app.include_router(supplier_admin.router)
 
 # Глобальный объект лидара
 # lidar_client = LidarClient(host="192.168.1.101", port=2111)
