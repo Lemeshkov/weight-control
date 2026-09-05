@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date,datetime
 
 import pytest
 from fastapi import FastAPI
@@ -22,7 +22,8 @@ def client():
         try:yield db
         finally:db.close()
     app.dependency_overrides[get_db]=override
-    yield TestClient(app)
+    test_client=TestClient(app);test_client.app.state.Session=Session
+    yield test_client
     Base.metadata.drop_all(engine)
 
 
@@ -69,3 +70,38 @@ def test_pagination_empty_middle_last_and_stable_sort(client):
     for name in ("В","А","Б","Г","Д"):supplier(client,name)
     pages=[client.get(f"/api/admin/suppliers?page={p}&page_size=2").json() for p in (1,2,3,4)]
     assert [x["name"] for x in pages[0]["items"]]==["А","Б"] and pages[1]["page"]==2 and len(pages[2]["items"])==1 and pages[3]["items"]==[]
+
+
+def test_unused_supplier_delete_and_deactivation_remains(client):
+    unused=supplier(client,"Новый");assert client.delete(f"/api/admin/suppliers/{unused['id']}").status_code==204
+    assert client.get("/api/admin/suppliers?search=Новый").json()["total"]==0
+    used=supplier(client,"Используется");client.post("/api/admin/vehicles",json={"registration_number":"Т001ЕСТ","supplier_id":used["id"],"valid_from":"2026-01-01"})
+    blocked=client.delete(f"/api/admin/suppliers/{used['id']}");assert blocked.status_code==409 and blocked.json()["detail"]["code"]=="SUPPLIER_IN_USE"
+    assert blocked.json()["detail"]["references"]["vehicle_assignments"]==1
+    assert client.patch(f"/api/admin/suppliers/{used['id']}",json={"is_active":False}).json()["is_active"] is False
+
+
+def test_supplier_with_spec_and_laboratory_history_cannot_be_deleted(client):
+    s=supplier(client);g=grade(client)
+    client.post("/api/admin/coal-specs",json={"supplier_id":s["id"],"coal_grade_id":g["id"],"valid_from":"2026-01-01","fractions":[]})
+    blocked=client.delete(f"/api/admin/suppliers/{s['id']}");assert blocked.status_code==409 and blocked.json()["detail"]["references"]["coal_specs"]==1
+    db=client.app.state.Session();fraction=models.CoalFraction(name="0-200");db.add(fraction);db.flush();db.add(models.LabExperiment(experiment_number="LAB-1",coal_grade_id=g["id"],coal_fraction_id=fraction.id,supplier_id=s["id"],tested_at=datetime.now(),laboratory_user_name="Лаборант"));db.commit();db.close()
+    blocked=client.delete(f"/api/admin/suppliers/{s['id']}");assert blocked.json()["detail"]["references"]["laboratory_records"]==1
+
+
+def test_coal_grade_full_lifecycle_duplicate_and_safe_delete(client):
+    item=client.post("/api/admin/coal-grades",json={"code":" Д ","name":" Длиннопламенный "}).json();assert item["code"]=="Д"
+    assert client.get("/api/admin/coal-grades?is_active=true").json()["total"]==1
+    edited=client.patch(f"/api/admin/coal-grades/{item['id']}",json={"code":"ДР","description":"Описание","is_active":False}).json();assert edited["code"]=="ДР" and edited["is_active"] is False
+    assert client.get("/api/admin/coal-grades?is_active=false").json()["items"][0]["id"]==item["id"]
+    assert client.patch(f"/api/admin/coal-grades/{item['id']}",json={"is_active":True}).json()["is_active"] is True
+    assert client.post("/api/admin/coal-grades",json={"code":" др ","name":"Другая"}).status_code==409
+    assert client.delete(f"/api/admin/coal-grades/{item['id']}").status_code==204
+
+
+def test_used_coal_grade_delete_is_blocked_and_historical_grade_readable(client):
+    s=supplier(client);g=grade(client);client.post("/api/admin/coal-specs",json={"supplier_id":s["id"],"coal_grade_id":g["id"],"valid_from":"2026-01-01","fractions":[]})
+    client.patch(f"/api/admin/coal-grades/{g['id']}",json={"is_active":False})
+    assert client.get("/api/admin/coal-grades?is_active=false").json()["items"][0]["id"]==g["id"]
+    blocked=client.delete(f"/api/admin/coal-grades/{g['id']}");assert blocked.status_code==409 and blocked.json()["detail"]["code"]=="COAL_GRADE_IN_USE"
+    assert client.get("/api/admin/coal-specs").json()["items"][0]["coal_grade_name"]

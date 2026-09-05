@@ -90,12 +90,27 @@ class CoalGradeCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
 
+    @field_validator("code", "name")
+    @classmethod
+    def trim_grade(cls, value):
+        value=value.strip()
+        if not value: raise ValueError("Марка угля обязательна")
+        return value
+
 
 class CoalGradeUpdate(BaseModel):
     code: str | None = Field(None, min_length=1, max_length=50)
     name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
     is_active: bool | None = None
+
+    @field_validator("code", "name")
+    @classmethod
+    def trim_optional_grade(cls, value):
+        if value is None:return value
+        value=value.strip()
+        if not value:raise ValueError("Марка угля обязательна")
+        return value
 
 
 class CoalGradeRead(ORMModel):

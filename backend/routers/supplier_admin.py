@@ -1,11 +1,12 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 import lab_models as lm
+import models
 from database import get_db
 from schemas.supplier_admin import *
 
@@ -52,6 +53,28 @@ def update_supplier(item_id:int,data:SupplierUpdate,db:Session=Depends(get_db)):
     item=_supplier(db,item_id)
     for key,value in data.model_dump(exclude_unset=True).items():setattr(item,key,value.strip() if key=="name" and value else value)
     _commit(db);db.refresh(item);return item
+
+
+def _supplier_references(db,item_id):
+    assignments=db.query(lm.VehicleSupplierAssignment).filter(lm.VehicleSupplierAssignment.supplier_id==item_id).count()
+    return {
+        "vehicles":db.query(func.count(func.distinct(lm.VehicleSupplierAssignment.vehicle_id))).filter(lm.VehicleSupplierAssignment.supplier_id==item_id).scalar() or 0,
+        "vehicle_assignments":assignments,
+        "coal_specs":db.query(lm.SupplierCoalSpec).filter(lm.SupplierCoalSpec.supplier_id==item_id).count(),
+        "laboratory_records":db.query(lm.LabExperiment).filter(lm.LabExperiment.supplier_id==item_id).count(),
+        "coal_acceptances":db.query(models.CoalAcceptance).filter(models.CoalAcceptance.supplier_id==item_id).count(),
+    }
+
+
+@router.delete("/suppliers/{item_id}",status_code=204)
+def delete_supplier(item_id:int,db:Session=Depends(get_db)):
+    item=_supplier(db,item_id);references=_supplier_references(db,item_id)
+    if any(references.values()):
+        raise HTTPException(409,{"code":"SUPPLIER_IN_USE","message":"Поставщик используется и не может быть удалён. Используйте деактивацию.","references":references})
+    db.delete(item)
+    try:db.commit()
+    except IntegrityError as exc:
+        db.rollback();raise HTTPException(409,{"code":"SUPPLIER_IN_USE","message":"Поставщик уже используется и не может быть удалён.","references":references}) from exc
 
 
 def _current_assignment(vehicle):
@@ -128,6 +151,8 @@ def coal_grades(page:int=Query(1,ge=1),page_size:int=Query(100,ge=1,le=200),is_a
 
 @router.post("/coal-grades",response_model=CoalGradeRead,status_code=201)
 def create_grade(data:CoalGradeCreate,db:Session=Depends(get_db)):
+    duplicate=next((x for x in db.query(lm.CoalGrade).all() if x.code.strip().casefold()==data.code.casefold() or x.name.strip().casefold()==data.name.casefold()),None)
+    if duplicate:raise HTTPException(409,{"code":"COAL_GRADE_ALREADY_EXISTS","message":f"Марка угля «{data.code}» уже существует."})
     item=lm.CoalGrade(**data.model_dump());db.add(item);_commit(db);db.refresh(item);return item
 
 
@@ -135,8 +160,28 @@ def create_grade(data:CoalGradeCreate,db:Session=Depends(get_db)):
 def update_grade(item_id:int,data:CoalGradeUpdate,db:Session=Depends(get_db)):
     item=db.get(lm.CoalGrade,item_id)
     if not item:raise HTTPException(404,"Марка угля не найдена")
-    for k,v in data.model_dump(exclude_unset=True).items():setattr(item,k,v)
+    values=data.model_dump(exclude_unset=True)
+    code=values.get("code",item.code);name=values.get("name",item.name)
+    duplicate=next((x for x in db.query(lm.CoalGrade).filter(lm.CoalGrade.id!=item_id).all() if x.code.strip().casefold()==code.casefold() or x.name.strip().casefold()==name.casefold()),None)
+    if duplicate:raise HTTPException(409,{"code":"COAL_GRADE_ALREADY_EXISTS","message":f"Марка угля «{code}» уже существует."})
+    for k,v in values.items():setattr(item,k,v)
     _commit(db);db.refresh(item);return item
+
+
+def _grade_references(db,item_id):
+    return {"coal_specs":db.query(lm.SupplierCoalSpec).filter(lm.SupplierCoalSpec.coal_grade_id==item_id).count(),"laboratory_records":db.query(lm.LabExperiment).filter(lm.LabExperiment.coal_grade_id==item_id).count(),"coal_acceptances":db.query(models.CoalAcceptance).filter(models.CoalAcceptance.coal_grade_id==item_id).count()}
+
+
+@router.delete("/coal-grades/{item_id}",status_code=204)
+def delete_grade(item_id:int,db:Session=Depends(get_db)):
+    item=db.get(lm.CoalGrade,item_id)
+    if not item:raise HTTPException(404,"Марка угля не найдена")
+    references=_grade_references(db,item_id)
+    if any(references.values()):raise HTTPException(409,{"code":"COAL_GRADE_IN_USE","message":"Марка угля используется и не может быть удалена. Используйте деактивацию.","references":references})
+    db.delete(item)
+    try:db.commit()
+    except IntegrityError as exc:
+        db.rollback();raise HTTPException(409,{"code":"COAL_GRADE_IN_USE","message":"Марка угля уже используется и не может быть удалена.","references":references}) from exc
 
 
 def _spec_read(item):
