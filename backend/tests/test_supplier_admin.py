@@ -1,4 +1,5 @@
 from datetime import date,datetime
+from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
@@ -155,3 +156,31 @@ def test_duplicate_updates_exclude_self_and_block_other_rows(client):
     g1=grade(client);g2=client.post("/api/admin/coal-grades",json={"code":"Д","name":"Д"}).json()
     assert client.patch(f"/api/admin/coal-grades/{g1['id']}",json={"code":g1["code"]}).status_code==200
     assert client.patch(f"/api/admin/coal-grades/{g2['id']}",json={"code":g1["code"].lower()}).status_code==409
+
+
+def test_coal_spec_decimal_values_survive_create_read_and_true_edit(client):
+    s=supplier(client);g=grade(client)
+    payload={"supplier_id":s["id"],"coal_grade_id":g["id"],"calorific_value":"5987.5","moisture_pct":"13.5","ash_pct":"15.75","valid_from":"2026-06-01","fractions":[{"fraction_min_mm":"0","fraction_max_mm":"5","operator":"<=","value":"37.5","unit":"%"}]}
+    created_response=client.post("/api/admin/coal-specs",json=payload)
+    assert created_response.status_code==201
+    created=created_response.json();spec_id=created["id"]
+    assert Decimal(created["calorific_value"])==Decimal("5987.5")
+    assert Decimal(created["moisture_pct"])==Decimal("13.5")
+    assert Decimal(created["ash_pct"])==Decimal("15.75")
+    assert Decimal(created["fractions"][0]["value"])==Decimal("37.5")
+    count_before=client.get("/api/admin/coal-specs").json()["total"]
+    assert Decimal(client.get(f"/api/admin/coal-specs/{spec_id}").json()["calorific_value"])==Decimal("5987.5")
+    edited=client.patch(f"/api/admin/coal-specs/{spec_id}",json={"moisture_pct":"13.75"}).json()
+    assert edited["id"]==spec_id and Decimal(edited["moisture_pct"])==Decimal("13.75")
+    assert client.get("/api/admin/coal-specs").json()["total"]==count_before
+
+
+def test_coal_spec_whole_number_values_remain_supported(client):
+    s=supplier(client);g=grade(client)
+    response=client.post("/api/admin/coal-specs",json={"supplier_id":s["id"],"coal_grade_id":g["id"],"calorific_value":6000,"moisture_pct":14,"ash_pct":16,"valid_from":"2026-07-01","fractions":[{"fraction_min_mm":0,"fraction_max_mm":5,"operator":"<=","value":40,"unit":"%"}]})
+    assert response.status_code==201
+    item=response.json()
+    assert Decimal(item["calorific_value"])==Decimal("6000")
+    assert Decimal(item["moisture_pct"])==Decimal("14")
+    assert Decimal(item["ash_pct"])==Decimal("16")
+    assert Decimal(item["fractions"][0]["value"])==Decimal("40")
