@@ -157,6 +157,26 @@ class CoalSpecReplace(CoalSpecCreate):
     pass
 
 
+class CoalSpecUpdate(BaseModel):
+    supplier_id: int | None = None
+    coal_grade_id: int | None = None
+    calorific_value: Decimal | None = Field(None, gt=0)
+    calorific_value_unit: str | None = Field(None, min_length=1, max_length=32)
+    moisture_pct: Decimal | None = Field(None, ge=0, le=100)
+    ash_pct: Decimal | None = Field(None, ge=0, le=100)
+    valid_from: date | None = None
+    valid_to: date | None = None
+    comment: str | None = None
+    is_active: bool | None = None
+    fractions: list[FractionSpecInput] | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self):
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValueError("Дата окончания не может быть раньше даты начала")
+        return self
+
+
 class CoalSpecRead(ORMModel):
     id: int; supplier_id: int; coal_grade_id: int
     calorific_value: Decimal | None; calorific_value_unit: str; moisture_pct: Decimal | None; ash_pct: Decimal | None

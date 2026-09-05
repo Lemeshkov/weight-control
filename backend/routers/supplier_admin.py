@@ -41,6 +41,8 @@ def suppliers(page: int=Query(1,ge=1), page_size: int=Query(20,ge=1,le=100), sea
 
 @router.post("/suppliers",response_model=SupplierRead,status_code=201)
 def create_supplier(data:SupplierCreate,db:Session=Depends(get_db)):
+    if any(x.name.strip().casefold()==data.name.casefold() for x in db.query(lm.Supplier).all()):
+        raise HTTPException(409,{"code":"SUPPLIER_ALREADY_EXISTS","message":f"Поставщик «{data.name}» уже существует."})
     item=lm.Supplier(**data.model_dump());db.add(item);_commit(db);db.refresh(item);return item
 
 
@@ -51,6 +53,8 @@ def get_supplier(item_id:int,db:Session=Depends(get_db)):return _supplier(db,ite
 @router.patch("/suppliers/{item_id}",response_model=SupplierRead)
 def update_supplier(item_id:int,data:SupplierUpdate,db:Session=Depends(get_db)):
     item=_supplier(db,item_id)
+    if data.name is not None and any(x.id!=item_id and x.name.strip().casefold()==data.name.casefold() for x in db.query(lm.Supplier).all()):
+        raise HTTPException(409,{"code":"SUPPLIER_ALREADY_EXISTS","message":f"Поставщик «{data.name}» уже существует."})
     for key,value in data.model_dump(exclude_unset=True).items():setattr(item,key,value.strip() if key=="name" and value else value)
     _commit(db);db.refresh(item);return item
 
@@ -124,6 +128,22 @@ def update_vehicle(item_id:int,data:VehicleUpdate,db:Session=Depends(get_db)):
     _commit(db);return _vehicle_read(item)
 
 
+@router.delete("/vehicles/{item_id}",status_code=204)
+def delete_vehicle(item_id:int,db:Session=Depends(get_db)):
+    item=_vehicle(db,item_id);assignments=list(item.supplier_assignments)
+    historical=sum(1 for x in assignments if x.valid_to is not None)
+    references={"supplier_assignments":len(assignments),"historical_assignments":historical}
+    # A freshly created unused duplicate has only its initial open assignment.
+    # Closed/reassigned history is immutable business history.
+    if historical or len(assignments)>1:
+        raise HTTPException(409,{"code":"VEHICLE_IN_USE","message":"Машина имеет историю назначений и не может быть удалена.","references":references})
+    try:
+        for assignment in assignments:db.delete(assignment)
+        db.flush();db.delete(item);db.commit()
+    except IntegrityError as exc:
+        db.rollback();raise HTTPException(409,{"code":"VEHICLE_IN_USE","message":"Машина используется и не может быть удалена.","references":references}) from exc
+
+
 @router.get("/vehicles/{item_id}/supplier-history",response_model=list[AssignmentRead])
 def assignment_history(item_id:int,db:Session=Depends(get_db)):return _vehicle(db,item_id).supplier_assignments
 
@@ -194,6 +214,13 @@ def _spec(db,item_id):
     return item
 
 
+def _ensure_spec_period_available(db,supplier_id,coal_grade_id,valid_from,valid_to,exclude_id=None):
+    upper=valid_to or valid_from.max
+    query=db.query(lm.SupplierCoalSpec).filter(lm.SupplierCoalSpec.supplier_id==supplier_id,lm.SupplierCoalSpec.coal_grade_id==coal_grade_id,lm.SupplierCoalSpec.valid_from<=upper,or_(lm.SupplierCoalSpec.valid_to.is_(None),lm.SupplierCoalSpec.valid_to>=valid_from))
+    if exclude_id is not None:query=query.filter(lm.SupplierCoalSpec.id!=exclude_id)
+    if query.first():raise HTTPException(409,{"code":"COAL_SPEC_PERIOD_CONFLICT","message":"Период спецификации пересекается с существующей версией."})
+
+
 @router.get("/coal-specs")
 def coal_specs(page:int=Query(1,ge=1),page_size:int=Query(20,ge=1,le=100),supplier_id:int|None=None,coal_grade_id:int|None=None,is_active:bool|None=None,db:Session=Depends(get_db)):
     q=db.query(lm.SupplierCoalSpec).options(joinedload(lm.SupplierCoalSpec.supplier),joinedload(lm.SupplierCoalSpec.coal_grade),joinedload(lm.SupplierCoalSpec.fractions))
@@ -208,14 +235,28 @@ def coal_specs(page:int=Query(1,ge=1),page_size:int=Query(20,ge=1,le=100),suppli
 def create_spec(data:CoalSpecCreate,db:Session=Depends(get_db)):
     _supplier(db,data.supplier_id)
     if not db.get(lm.CoalGrade,data.coal_grade_id):raise HTTPException(422,"Марка угля не найдена")
-    upper=data.valid_to or data.valid_from.max
-    overlap=db.query(lm.SupplierCoalSpec).filter(lm.SupplierCoalSpec.supplier_id==data.supplier_id,lm.SupplierCoalSpec.coal_grade_id==data.coal_grade_id,lm.SupplierCoalSpec.valid_from<=upper,or_(lm.SupplierCoalSpec.valid_to.is_(None),lm.SupplierCoalSpec.valid_to>=data.valid_from)).first()
-    if overlap:raise HTTPException(409,"Период спецификации пересекается с существующей версией; используйте замену версии")
+    _ensure_spec_period_available(db,data.supplier_id,data.coal_grade_id,data.valid_from,data.valid_to)
     payload=data.model_dump(exclude={"fractions"});item=lm.SupplierCoalSpec(**payload);item.fractions=[lm.SupplierCoalFractionSpec(**x.model_dump()) for x in data.fractions];db.add(item);_commit(db);return _spec_read(_spec(db,item.id))
 
 
 @router.get("/coal-specs/{item_id}")
 def get_spec(item_id:int,db:Session=Depends(get_db)):return _spec_read(_spec(db,item_id))
+
+
+@router.patch("/coal-specs/{item_id}")
+def update_spec(item_id:int,data:CoalSpecUpdate,db:Session=Depends(get_db)):
+    item=_spec(db,item_id)
+    if item.valid_to is not None or not item.is_active:
+        raise HTTPException(409,{"code":"COAL_SPEC_HISTORICAL_EDIT_FORBIDDEN","message":"Эта запись уже является исторической. Для изменения создайте новую версию."})
+    values=data.model_dump(exclude_unset=True,exclude={"fractions"});supplier_id=values.get("supplier_id",item.supplier_id);grade_id=values.get("coal_grade_id",item.coal_grade_id)
+    _supplier(db,supplier_id)
+    if not db.get(lm.CoalGrade,grade_id):raise HTTPException(422,"Марка угля не найдена")
+    valid_from=values.get("valid_from",item.valid_from);valid_to=values.get("valid_to",item.valid_to)
+    if valid_to is not None and valid_to<valid_from:raise HTTPException(422,"Дата окончания не может быть раньше даты начала")
+    _ensure_spec_period_available(db,supplier_id,grade_id,valid_from,valid_to,item_id)
+    for key,value in values.items():setattr(item,key,value)
+    if data.fractions is not None:item.fractions=[lm.SupplierCoalFractionSpec(**x.model_dump()) for x in data.fractions]
+    _commit(db);return _spec_read(_spec(db,item_id))
 
 
 @router.post("/coal-specs/{item_id}/replace",status_code=201)
@@ -225,6 +266,16 @@ def replace_spec(item_id:int,data:CoalSpecReplace,db:Session=Depends(get_db)):
     if data.valid_from<=old.valid_from:raise HTTPException(422,"Новая версия должна начинаться позже предыдущей")
     old.valid_to=data.valid_from-timedelta(days=1);old.is_active=False
     return create_spec(data,db)
+
+
+@router.delete("/coal-specs/{item_id}",status_code=204)
+def delete_spec(item_id:int,db:Session=Depends(get_db)):
+    item=_spec(db,item_id);references={"fraction_rules":len(item.fractions),"historical":int(item.valid_to is not None or not item.is_active)}
+    if item.valid_to is not None or not item.is_active:
+        raise HTTPException(409,{"code":"COAL_SPEC_IN_USE","message":"Историческая версия спецификации не может быть удалена.","references":references})
+    try:db.delete(item);db.commit()
+    except IntegrityError as exc:
+        db.rollback();raise HTTPException(409,{"code":"COAL_SPEC_IN_USE","message":"Спецификация используется и не может быть удалена.","references":references}) from exc
 
 
 @router.patch("/coal-specs/{item_id}/status")

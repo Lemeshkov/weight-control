@@ -105,3 +105,53 @@ def test_used_coal_grade_delete_is_blocked_and_historical_grade_readable(client)
     assert client.get("/api/admin/coal-grades?is_active=false").json()["items"][0]["id"]==g["id"]
     blocked=client.delete(f"/api/admin/coal-grades/{g['id']}");assert blocked.status_code==409 and blocked.json()["detail"]["code"]=="COAL_GRADE_IN_USE"
     assert client.get("/api/admin/coal-specs").json()["items"][0]["coal_grade_name"]
+
+
+def test_true_edit_preserves_supplier_vehicle_and_grade_ids_and_counts(client):
+    s=supplier(client,"Поставщик");g=grade(client)
+    vehicle=client.post("/api/admin/vehicles",json={"registration_number":"А123АА142","make_model":"КАМАЗ","supplier_id":s["id"],"valid_from":"2026-01-01"}).json()
+    counts=(client.get("/api/admin/suppliers").json()["total"],client.get("/api/admin/vehicles").json()["total"],client.get("/api/admin/coal-grades").json()["total"])
+    edited_s=client.patch(f"/api/admin/suppliers/{s['id']}",json={"name":"Поставщик Кузбасс"}).json()
+    edited_v=client.patch(f"/api/admin/vehicles/{vehicle['id']}",json={"make_model":"КАМАЗ 6520"}).json()
+    edited_g=client.patch(f"/api/admin/coal-grades/{g['id']}",json={"description":"Исправленное описание"}).json()
+    assert (edited_s["id"],edited_v["id"],edited_g["id"])==(s["id"],vehicle["id"],g["id"])
+    assert edited_v["make_model"]=="КАМАЗ 6520"
+    assert counts==(client.get("/api/admin/suppliers").json()["total"],client.get("/api/admin/vehicles").json()["total"],client.get("/api/admin/coal-grades").json()["total"])
+
+
+def test_vehicle_safe_delete_allows_fresh_duplicate_but_blocks_history(client):
+    first=supplier(client,"Первый");second=supplier(client,"Второй")
+    fresh=client.post("/api/admin/vehicles",json={"registration_number":"У001УУ142","supplier_id":first["id"],"valid_from":"2026-01-01"}).json()
+    assert client.delete(f"/api/admin/vehicles/{fresh['id']}").status_code==204
+    assert client.get(f"/api/admin/vehicles/{fresh['id']}").status_code==404
+    used=client.post("/api/admin/vehicles",json={"registration_number":"У002УУ142","supplier_id":first["id"],"valid_from":"2026-01-01"}).json()
+    client.post(f"/api/admin/vehicles/{used['id']}/reassign",json={"supplier_id":second["id"],"valid_from":"2026-02-01"})
+    blocked=client.delete(f"/api/admin/vehicles/{used['id']}");assert blocked.status_code==409 and blocked.json()["detail"]["code"]=="VEHICLE_IN_USE"
+    assert len(client.get(f"/api/admin/vehicles/{used['id']}/supplier-history").json())==2
+
+
+def test_coal_spec_true_edit_and_explicit_version_have_distinct_semantics(client):
+    s=supplier(client);g=grade(client);payload={"supplier_id":s["id"],"coal_grade_id":g["id"],"moisture_pct":"14","valid_from":"2026-01-01","fractions":[{"fraction_min_mm":0,"fraction_max_mm":5,"operator":"<=","value":40,"unit":"%"}]}
+    original=client.post("/api/admin/coal-specs",json=payload).json();before=client.get("/api/admin/coal-specs").json()["total"]
+    edited=client.patch(f"/api/admin/coal-specs/{original['id']}",json={"moisture_pct":"13.5"}).json()
+    assert edited["id"]==original["id"] and float(edited["moisture_pct"])==13.5 and client.get("/api/admin/coal-specs").json()["total"]==before
+    payload.update(valid_from="2026-03-01",moisture_pct="12")
+    version=client.post(f"/api/admin/coal-specs/{original['id']}/replace",json=payload).json()
+    assert version["id"]!=original["id"] and client.get("/api/admin/coal-specs").json()["total"]==before+1
+    forbidden=client.patch(f"/api/admin/coal-specs/{original['id']}",json={"moisture_pct":"11"});assert forbidden.status_code==409 and forbidden.json()["detail"]["code"]=="COAL_SPEC_HISTORICAL_EDIT_FORBIDDEN"
+
+
+def test_coal_spec_delete_current_allowed_historical_blocked(client):
+    s=supplier(client);g=grade(client);base={"supplier_id":s["id"],"coal_grade_id":g["id"],"valid_from":"2026-01-01","fractions":[]}
+    current=client.post("/api/admin/coal-specs",json=base).json();assert client.delete(f"/api/admin/coal-specs/{current['id']}").status_code==204
+    old=client.post("/api/admin/coal-specs",json=base).json();base["valid_from"]="2026-02-01";client.post(f"/api/admin/coal-specs/{old['id']}/replace",json=base)
+    blocked=client.delete(f"/api/admin/coal-specs/{old['id']}");assert blocked.status_code==409 and blocked.json()["detail"]["code"]=="COAL_SPEC_IN_USE"
+
+
+def test_duplicate_updates_exclude_self_and_block_other_rows(client):
+    first=supplier(client,"Первый");second=supplier(client,"Второй")
+    assert client.patch(f"/api/admin/suppliers/{first['id']}",json={"name":" Первый "}).status_code==200
+    assert client.patch(f"/api/admin/suppliers/{second['id']}",json={"name":"первый"}).status_code==409
+    g1=grade(client);g2=client.post("/api/admin/coal-grades",json={"code":"Д","name":"Д"}).json()
+    assert client.patch(f"/api/admin/coal-grades/{g1['id']}",json={"code":g1["code"]}).status_code==200
+    assert client.patch(f"/api/admin/coal-grades/{g2['id']}",json={"code":g1["code"].lower()}).status_code==409

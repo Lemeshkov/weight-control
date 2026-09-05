@@ -1,0 +1,24 @@
+import {fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {beforeEach,expect,test,vi} from "vitest";
+import {SupplierAdminPage} from "./SupplierAdminPage";
+
+const supplier={id:1,name:"Supplier One",is_active:true};
+const grade={id:2,code:"GR",name:"Grade GR",description:"Grade description",is_active:true};
+const vehicle={id:7,registration_number:"A123AA142",make_model:"KAMAZ",current_supplier_name:supplier.name,is_active:true};
+const spec={id:9,supplier_id:1,coal_grade_id:2,supplier_name:supplier.name,coal_grade_name:grade.name,calorific_value:"6000",calorific_value_unit:"kcal/kg",moisture_pct:"14",ash_pct:"16",valid_from:"2026-09-01",valid_to:null,is_active:true,fractions:[{fraction_min_mm:"0",fraction_max_mm:"5",operator:"<=",value:"40",unit:"%"}]};
+const page=(items:any[])=>({items,total:items.length,page:1,page_size:20,total_pages:items.length?1:0});
+
+beforeEach(()=>{vi.restoreAllMocks();vi.stubGlobal("confirm",vi.fn(()=>true))});
+
+function crudFetch(){return vi.fn(async(input:any,init?:RequestInit)=>{const url=String(input);if(init?.method)return {ok:true,status:init.method==="DELETE"?204:200,json:async()=>({})};if(url.includes("/vehicles?"))return {ok:true,status:200,json:async()=>page([vehicle])};if(url.includes("/coal-specs?"))return {ok:true,status:200,json:async()=>page([spec])};if(url.includes("coal-grades"))return {ok:true,status:200,json:async()=>page([grade])};if(url.includes("suppliers"))return {ok:true,status:200,json:async()=>page([supplier])};return {ok:true,status:200,json:async()=>page([])}})}
+const action=(container:HTMLElement,index:number)=>container.querySelectorAll<HTMLButtonElement>("tbody button")[index];
+const submit=(container:HTMLElement)=>container.querySelector<HTMLButtonElement>("form .primary-action")!;
+const tab=(container:HTMLElement,index:number)=>fireEvent.click(container.querySelectorAll<HTMLButtonElement>("nav button")[index]);
+
+test("supplier edit uses PATCH for the selected stable id",async()=>{const fetchMock=crudFetch();vi.stubGlobal("fetch",fetchMock);const {container}=render(<SupplierAdminPage/>);await waitFor(()=>expect(screen.getByText("Supplier One")).toBeTruthy());fireEvent.click(action(container,0));fireEvent.click(submit(container));await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/admin/suppliers/1",expect.objectContaining({method:"PATCH"})));expect(fetchMock.mock.calls.some(([url,init])=>String(url)==="/api/admin/suppliers"&&init?.method==="POST")).toBe(false)});
+
+test("vehicle edit patches, while delete remains separate and confirmed",async()=>{const fetchMock=crudFetch();vi.stubGlobal("fetch",fetchMock);const {container}=render(<SupplierAdminPage/>);tab(container,1);await waitFor(()=>expect(screen.getByText("A123AA142")).toBeTruthy());fireEvent.click(action(container,0));fireEvent.click(submit(container));await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/admin/vehicles/7",expect.objectContaining({method:"PATCH"})));expect(fetchMock.mock.calls.some(([url,init])=>String(url)==="/api/admin/vehicles"&&init?.method==="POST")).toBe(false);fireEvent.click(action(container,1));expect(confirm).toHaveBeenCalled();await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/admin/vehicles/7",{method:"DELETE"}))});
+
+test("coal grade edit uses PATCH for the selected stable id",async()=>{const fetchMock=crudFetch();vi.stubGlobal("fetch",fetchMock);const {container}=render(<SupplierAdminPage/>);tab(container,2);await waitFor(()=>expect(screen.getByText("Grade description")).toBeTruthy());fireEvent.click(action(container,0));fireEvent.click(submit(container));await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/admin/coal-grades/2",expect.objectContaining({method:"PATCH"})));expect(fetchMock.mock.calls.some(([url,init])=>String(url)==="/api/admin/coal-grades"&&init?.method==="POST")).toBe(false)});
+
+test("coal spec edit and explicit version use different endpoints",async()=>{const fetchMock=crudFetch();vi.stubGlobal("fetch",fetchMock);const {container}=render(<SupplierAdminPage/>);tab(container,3);await waitFor(()=>expect(screen.getByText("6000 kcal/kg")).toBeTruthy());fireEvent.click(action(container,0));fireEvent.click(submit(container));await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/admin/coal-specs/9",expect.objectContaining({method:"PATCH"})));expect(fetchMock.mock.calls.some(([url])=>String(url).endsWith("/replace"))).toBe(false);fireEvent.click(action(container,1));fireEvent.click(submit(container));await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/admin/coal-specs/9/replace",expect.objectContaining({method:"POST"})));fireEvent.click(action(container,2));expect(confirm).toHaveBeenCalled();await waitFor(()=>expect(fetchMock).toHaveBeenCalledWith("/api/admin/coal-specs/9",{method:"DELETE"}))});
